@@ -18,6 +18,8 @@ targets:
     platform: iOS
     sources:
       - path: BusAlerts/Sources
+      - path: BusAlerts/Resources
+        type: resources
     info:
       path: BusAlerts/Info.plist
       properties:
