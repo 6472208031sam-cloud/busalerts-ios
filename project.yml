@@ -1,0 +1,36 @@
+# xcodegen project spec — generates BusAlerts.xcodeproj on the CI runner.
+# (`brew install xcodegen && xcodegen generate`)
+#
+# IMPORTANT (learned the hard way on stcecilia-ios): the `info:` block needs
+# BOTH `path:` (xcodegen REQUIRES it — `properties` alone fails with
+# "Decoding failed at 'path': Nothing found") AND `properties:` with every
+# key. xcodegen GENERATES the Info.plist at `path` from `properties` — do NOT
+# commit a hand-written Info.plist, xcodegen would silently overwrite it with
+# an empty one and the app would ship without UIBackgroundModes (launch crash).
+name: BusAlerts
+options:
+  bundleIdPrefix: io.github
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  BusAlerts:
+    type: application
+    platform: iOS
+    sources:
+      - path: BusAlerts/Sources
+    info:
+      path: BusAlerts/Info.plist
+      properties:
+        CFBundleDisplayName: Bus Stop Alerts
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        ITSAppUsesNonExemptEncryption: false
+        NSLocationWhenInUseUsageDescription: "Bus Stop Alerts uses your location while you drive so it can alert you as you reach each bus stop."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "Bus Stop Alerts tracks your ride in the background so stop alerts keep working when the screen is off or the app is minimized."
+        UIBackgroundModes: [location]
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.busstopalerts
+        SWIFT_VERSION: "5.0"
