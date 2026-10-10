@@ -21,9 +21,9 @@ targets:
     info:
       path: BusAlerts/Info.plist
       properties:
-        CFBundleDisplayName: Bus Stop Alerts v1
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "1"
+        CFBundleDisplayName: Bus Stop Alerts v2
+        CFBundleShortVersionString: "2.0"
+        CFBundleVersion: "2"
         ITSAppUsesNonExemptEncryption: false
         NSLocationWhenInUseUsageDescription: "Bus Stop Alerts uses your location while you drive so it can alert you as you reach each bus stop."
         NSLocationAlwaysAndWhenInUseUsageDescription: "Bus Stop Alerts tracks your ride in the background so stop alerts keep working when the screen is off or the app is minimized."
