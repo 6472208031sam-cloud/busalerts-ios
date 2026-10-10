@@ -21,7 +21,7 @@ targets:
     info:
       path: BusAlerts/Info.plist
       properties:
-        CFBundleDisplayName: Bus Stop Alerts
+        CFBundleDisplayName: Bus Stop Alerts v1
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
         ITSAppUsesNonExemptEncryption: false
