@@ -252,7 +252,7 @@ final class LocationTracker: NSObject {
         // Exact message formats from Android's TrackingService.onArrival:
         // AM: "🚌 Stop 10 reached."  PM: "🚌 Stop L (7) reached."
         // Final: "🚌 Final stop reached (AM): <name>." / "... (PM): <name>."
-        let routeTag = (r.page == "pm" || r.tab == "pm") ? " (PM)" : " (AM)"
+        let routeTag = (r.page == "pm") ? " (PM)" : " (AM)"
         let msg = isFinal
             ? "🚌 Final stop reached\(routeTag): \(stop.name)."
             : "🚌 \(stop.label) reached."
