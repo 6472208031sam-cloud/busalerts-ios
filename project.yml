@@ -35,4 +35,4 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.busstopalerts
-        SWIFT_VERSION: "7.0"
+        SWIFT_VERSION: "5.0"
