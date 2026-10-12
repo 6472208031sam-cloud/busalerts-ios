@@ -74,6 +74,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
             guard let self = self else { return }
             if !self.startScheduledRideIfPending() {
                 LocationTracker.shared.pushSyncIfActive()
+                // Auto-start tracking on launch (matches Android).
+                self.eval("(function(){ try { if (typeof startTracking==='function') startTracking(); } catch(e){} })()")
             }
         }
     }
