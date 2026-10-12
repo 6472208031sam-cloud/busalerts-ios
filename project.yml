@@ -23,8 +23,8 @@ targets:
     info:
       path: BusAlerts/Info.plist
       properties:
-        CFBundleDisplayName: Bus Stop Alerts v8
-        CFBundleShortVersionString: "8.0"
+        CFBundleDisplayName: Bus Stop Alerts v9
+        CFBundleShortVersionString: "9.0"
         CFBundleVersion: "5"
         ITSAppUsesNonExemptEncryption: false
         NSLocationWhenInUseUsageDescription: "Bus Stop Alerts uses your location while you drive so it can alert you as you reach each bus stop."

@@ -61,7 +61,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // Track which page actually loaded (the user may have used the
         // in-page AM/PM switcher since the last load).
-        if let url = webView.url?.absoluteString, url.contains("pm.html") {
+        if let url = webView.url?.absoluteString, url.contains("pm.html?v=3.2") {
             currentPage = "pm"
         } else {
             currentPage = "am"
