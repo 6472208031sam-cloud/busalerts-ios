@@ -283,13 +283,21 @@ final class LocationTracker: NSObject {
         let isFinal = idx == r.stops.count - 1
         if r.sound { AlertPlayer.shared.play() }
         vibrate()
-        // Exact message formats from Android's TrackingService.onArrival:
-        // AM: "🚌 Stop 10 reached."  PM: "🚌 Stop L (7) reached."
-        // Final: "🚌 Final stop reached (AM): <name>." / "... (PM): <name>."
-        let routeTag = (r.page == "pm") ? " (PM)" : " (AM)"
-        let msg = isFinal
-            ? "🚌 Final stop reached\(routeTag): \(stop.name)."
-            : "🚌 \(stop.label) reached."
+        // My Stop format: "📱 [X##] waiting at Stop 1: Mia." (AM) / "got off at" (PM)
+        // Regular: "🚌 [X##] at Stop 2: Walking."
+        let myStopLabel = (r.page == "pm") ? r.myStopPm : r.myStopAm
+        let isMyStop = !myStopLabel.isEmpty && myStopLabel == stop.label
+        let devTag = r.deviceId.isEmpty ? "" : " [" + r.deviceId + "]"
+        let msg: String
+        if isMyStop {
+            msg = (r.page == "pm")
+                ? "📱\(devTag) got off at Stop \(stop.label): \(stop.name)."
+                : "📱\(devTag) waiting at Stop \(stop.label): \(stop.name)."
+        } else if isFinal {
+            msg = "🚌\(devTag) at Stop \(stop.label): \(stop.name). Route complete."
+        } else {
+            msg = "🚌\(devTag) at Stop \(stop.label): \(stop.name)."
+        }
         postArrivalNotification(message: msg)
         if r.followerOn && !r.topic.isEmpty {
             // The final stop tears down location updates right after this

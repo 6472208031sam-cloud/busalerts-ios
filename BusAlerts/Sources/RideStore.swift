@@ -52,6 +52,8 @@ final class RideState {
     var page = "am"
     var topic = ""
     var deviceId = ""
+    var myStopAm = ""
+    var myStopPm = ""
     var followerOn = true
     var sound = false
     var snapDistance = 350.0
@@ -76,6 +78,10 @@ final class RideState {
         page = json["page"] as? String ?? "am"
         topic = json["topic"] as? String ?? ""
         deviceId = json["deviceId"] as? String ?? ""
+        if let ms = json["myStop"] as? [String: Any] {
+            myStopAm = ms["am"] as? String ?? ""
+            myStopPm = ms["pm"] as? String ?? ""
+        }
         followerOn = json["followerOn"] as? Bool ?? true
         // The AM page (older) doesn't send `sound`; default on like Android.
         sound = json["sound"] as? Bool ?? false
