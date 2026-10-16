@@ -287,17 +287,17 @@ final class LocationTracker: NSObject {
         // Regular: "🚌 [X##] at Stop 2: Walking."
         let myStopLabel = (r.page == "pm") ? r.myStopPm : r.myStopAm
         let isMyStop = !myStopLabel.isEmpty && myStopLabel == stop.label
-        // Note: fullMsg below appends " [X##]" — do NOT include devTag here
-        // stop.label already includes name (e.g. "Stop 1: Mia")
+        // Per spec: device ID after emoji, e.g. "🚌 [A82] at Stop 1: Mia."
+        let devTag = r.deviceId.isEmpty ? "" : " [" + r.deviceId + "]"
         let msg: String
         if isMyStop {
             msg = (r.page == "pm")
-                ? "📱 got off at \(stop.label)."
-                : "📱 waiting at \(stop.label)."
+                ? "📱\(devTag) got off at \(stop.label)."
+                : "📱\(devTag) waiting at \(stop.label)."
         } else if isFinal {
-            msg = "🚌 at \(stop.label). Route complete."
+            msg = "🚌\(devTag) at \(stop.label). Route complete."
         } else {
-            msg = "🚌 at \(stop.label)."
+            msg = "🚌\(devTag) at \(stop.label)."
         }
         postArrivalNotification(message: msg)
         if r.followerOn && !r.topic.isEmpty {
@@ -308,7 +308,7 @@ final class LocationTracker: NSObject {
             taskID = UIApplication.shared.beginBackgroundTask(withName: "ntfy-post") {
                 UIApplication.shared.endBackgroundTask(taskID)
             }
-            let fullMsg = r.deviceId.isEmpty ? msg : msg + " [" + r.deviceId + "]"
+            let fullMsg = msg // device ID already in message per spec
             NtfyClient.post(topic: r.topic, message: fullMsg) {
                 UIApplication.shared.endBackgroundTask(taskID)
             }
