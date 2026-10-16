@@ -288,15 +288,16 @@ final class LocationTracker: NSObject {
         let myStopLabel = (r.page == "pm") ? r.myStopPm : r.myStopAm
         let isMyStop = !myStopLabel.isEmpty && myStopLabel == stop.label
         // Note: fullMsg below appends " [X##]" — do NOT include devTag here
+        // stop.label already includes name (e.g. "Stop 1: Mia")
         let msg: String
         if isMyStop {
             msg = (r.page == "pm")
-                ? "📱 got off at \(stop.label): \(stop.name)."
-                : "📱 waiting at \(stop.label): \(stop.name)."
+                ? "📱 got off at \(stop.label)."
+                : "📱 waiting at \(stop.label)."
         } else if isFinal {
-            msg = "🚌 at \(stop.label): \(stop.name). Route complete."
+            msg = "🚌 at \(stop.label). Route complete."
         } else {
-            msg = "🚌 at \(stop.label): \(stop.name)."
+            msg = "🚌 at \(stop.label)."
         }
         postArrivalNotification(message: msg)
         if r.followerOn && !r.topic.isEmpty {
