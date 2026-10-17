@@ -56,7 +56,7 @@ final class RideState {
     var myStopPm = ""
     var followerOn = true
     var sound = false
-    var snapDistance = 350.0
+    var snapDistance = 100.0
     var schedEnabled = false
     var schedOn1 = 480
     var schedOff1 = 600
