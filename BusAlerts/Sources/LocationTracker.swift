@@ -336,6 +336,7 @@ final class LocationTracker: NSObject {
         // Per spec: device ID after emoji, e.g. "🚌 [A82] at Stop 1: Mia."
         let devTag = r.deviceId.isEmpty ? "" : " [" + r.deviceId + "]"
         let msg: String
+        let gotOff = isMyStop && r.page == "pm"
         if isMyStop {
             msg = (r.page == "pm")
                 ? "📱\(devTag) got off at \(stop.label)."
@@ -358,6 +359,19 @@ final class LocationTracker: NSObject {
             NtfyClient.post(topic: r.topic, message: fullMsg) { [weak self] in
                 DispatchQueue.main.async { self?.nativeLog("NTFY", "Sent: \(fullMsg)") }
                 UIApplication.shared.endBackgroundTask(taskID)
+                // Auto-stop on "got off" (PM My Stop): journey done.
+                if gotOff {
+                    let offMsg = "📱\(devTag) off bus. Tracking stopped."
+                    var offTaskID: UIBackgroundTaskIdentifier = .invalid
+                    offTaskID = UIApplication.shared.beginBackgroundTask(withName: "ntfy-offbus") {
+                        UIApplication.shared.endBackgroundTask(offTaskID)
+                    }
+                    NtfyClient.post(topic: r.topic, message: offMsg) { [weak self] in
+                        DispatchQueue.main.async { self?.nativeLog("NTFY", "Sent: \(offMsg)") }
+                        UIApplication.shared.endBackgroundTask(offTaskID)
+                        DispatchQueue.main.async { self?.finishRide() }
+                    }
+                }
             }
         } else {
             nativeLog("NTFY", "skipped followerOn=\(r.followerOn) topicSet=\(!r.topic.isEmpty)")
