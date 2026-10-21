@@ -10,10 +10,11 @@ import UIKit
 /// On iOS the UIBackgroundModes=location capability keeps updates flowing
 /// with the screen off — no wake lock concept exists.
 ///
-/// Route model: the AM page (index.html, `page` "am") has 13 numbered stops;
-/// the PM page (pm.html, `page` "pm") has 14 stops S,0,A–L whose labels carry
-/// the AM number in brackets (e.g. "Stop L (7)"). The pages themselves stop
-/// a mismatched native ride on load via getStatus(), exactly like Android.
+/// Route model: one page (index.html) hosts both routes as tabs; the ride
+/// config's `page` field names the route — "am" has 13 numbered stops,
+/// "pm" has 16 stops S,0,01,02,A–L whose labels carry the AM number in
+/// brackets (e.g. "Stop L (7)"). On load the page syncs with an active
+/// native ride via getStatus() and adopts its tab, exactly like Android.
 final class LocationTracker: NSObject {
     static let shared = LocationTracker()
 
@@ -96,7 +97,7 @@ final class LocationTracker: NSObject {
     /// Called when a permission-deferred ride auto-starts.
     var onAutoStarted: (() -> Void)?
     /// Page requested by tapping a schedule notification ("am"/"pm").
-    var pendingScheduledPage: String?
+    var pendingScheduledTab: String?
 
     var isTracking: Bool { ride != nil }
 

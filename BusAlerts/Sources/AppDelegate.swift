@@ -23,8 +23,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let page = response.notification.request.content.userInfo["schedPage"] as? String {
-            LocationTracker.shared.pendingScheduledPage = page
+        // "schedTab" is the current key; "schedPage" is still accepted so a
+        // notification armed by the previous app version keeps working.
+        let info = response.notification.request.content.userInfo
+        if let page = (info["schedTab"] as? String) ?? (info["schedPage"] as? String) {
+            LocationTracker.shared.pendingScheduledTab = page
             // If the page is already loaded, start right away; otherwise
             // ViewController picks it up after the page finishes loading.
             DispatchQueue.main.async {

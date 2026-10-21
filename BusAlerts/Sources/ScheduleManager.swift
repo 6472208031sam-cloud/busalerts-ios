@@ -7,9 +7,9 @@ import UserNotifications
 /// like Android's setAlarmClock(). An iOS app cannot wake itself up at 8:00 AM
 /// and start GPS tracking with the phone locked. The closest iOS equivalent
 /// is a local notification at the configured on-time saying "Tap to start
-/// tracking" — tapping it opens the app on the right page (AM -> index.html,
-/// PM -> pm.html), which then auto-starts the ride. That is what this class
-/// implements.
+/// tracking" — tapping it opens the app (single page for both routes) and
+/// starts the ride from the stored config for the tapped route. That is
+/// what this class implements.
 ///
 /// Android schedule semantics mirrored here: schedOn1/schedOff1 is the AM
 /// window, schedOn2/schedOff2 the PM window (Toronto time, weekdays-only
@@ -80,7 +80,7 @@ final class ScheduleManager {
             ? "Time for the morning route — tap to start tracking."
             : "Time for the afternoon route — tap to start tracking."
         content.sound = .default
-        content.userInfo = ["schedPage": page]
+        content.userInfo = ["schedTab": page]
 
         var components = DateComponents()
         components.timeZone = toronto

@@ -8,10 +8,11 @@ There is no Mac involved: the app is compiled on GitHub Actions macOS runners.
 ## What it is
 
 - **Bundle ID** `io.github.busstopalerts`, display name **Bus Stop Alerts**, version 1.0 (build 1).
-- One full-screen `WKWebView` loading the live AM page
-  `https://6472208031sam-cloud.github.io/bus-stop-alerts/` — the pages are the
-  entire UI, exactly like the Android app. The in-page AM/PM switcher navigates
-  to `pm.html` inside the same WebView.
+- One full-screen `WKWebView` loading the live page
+  `https://6472208031sam-cloud.github.io/bus-stop-alerts/` — the page is the
+  entire UI, exactly like the Android app. Both routes live on that single
+  page as tabs; AM/PM never changes the URL (v30 removed the old pm.html
+  loader — the route is chosen by ride config, not by page).
 - A native background location tracker (`LocationTracker.swift`) ports the
   Android `TrackingService` logic 1:1:
   - `CLLocationManager` with `allowsBackgroundLocationUpdates`, best accuracy,
@@ -28,8 +29,9 @@ There is no Mac involved: the app is compiled on GitHub Actions macOS runners.
     `🚌 Final stop reached (AM/PM): <name>.`), plus a local notification so
     backgrounded arrivals are visible.
   - Ride state persisted to `UserDefaults`; restored on launch.
-  - Cross-page behavior mirrors Android: the pages check `getStatus()` on load
-    and stop a native ride started for the other route (`page` "am" vs "pm").
+  - Cross-route behavior mirrors Android: the page checks `getStatus()` on
+    load and adopts the tab of a native ride already running (`page` "am"
+    vs "pm") — it never stops a running ride for being on the other route.
 - `window.NativeBridge` exposes the **same interface as Android**
   (`startRide` → `"started"`/`"permission_needed"`/`"error"`, `stopRide`,
   `updateConfig`, `getStatus`, `hasBackgroundPermission`).
@@ -49,10 +51,10 @@ GPS in the background.
 The honest approximation implemented here: when a page pushes its schedule
 config, the app arms **local notifications** at the configured on-times
 (Toronto time, weekdays-only respected) saying *"Time for the morning/afternoon
-route — tap to start tracking."* Tapping the notification opens the app on the
-right page (AM → index.html, PM → pm.html), which auto-starts the ride. The
-schedule toggle and times are still configured on the web pages, exactly as on
-Android. There is no off-alarm on iOS.
+route — tap to start tracking."* Tapping the notification opens the app and
+starts the ride from the stored config for that route (AM or PM) — no page
+navigation is involved. The schedule toggle and times are still configured
+on the web pages, exactly as on Android. There is no off-alarm on iOS.
 
 ## The .ipa is unsigned
 

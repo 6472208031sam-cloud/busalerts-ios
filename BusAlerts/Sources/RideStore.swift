@@ -46,8 +46,9 @@ final class RideStop {
 
 /// Full ride config, mirroring the JSON the web pages send via
 /// NativeBridge.startRide() (same shape as the Android app).
-/// `page` is "am" (index.html, 13 numbered stops) or "pm" (pm.html,
-/// stops S,0,A–L with the AM number in brackets, e.g. "Stop L (7)").
+/// `page` names the route tab on the single index.html page: "am"
+/// (13 numbered stops) or "pm" (stops S,0,01,02,A–L with the AM number
+/// in brackets, e.g. "Stop L (7)").
 final class RideState {
     var page = "am"
     var topic = ""

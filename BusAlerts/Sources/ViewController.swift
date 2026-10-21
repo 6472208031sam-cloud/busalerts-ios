@@ -1,21 +1,19 @@
 import UIKit
 import WebKit
 
-/// Single full-screen WKWebView over the live Bus Stop Alerts pages.
-/// Mirrors Android's MainActivity: the pages are the entire UI, the native
-/// side owns background tracking and feeds the page through the NativeBridge
-/// shim. The AM/PM switcher navigates between index.html and pm.html inside
-/// this WebView; the pages themselves stop a mismatched native ride via
-/// getStatus() (page check), exactly like on Android.
+/// Single full-screen WKWebView over the live Bus Stop Alerts page.
+/// Mirrors Android's MainActivity and the St Cecilia app: ONE page
+/// (index.html) hosts both routes as tabs — the native side owns background
+/// tracking and feeds the page through the NativeBridge shim. There is no
+/// per-route page and no AM/PM navigation: a scheduled ride starts natively
+/// from the stored config for its route, and the page adopts the ride's tab
+/// via getStatus()/pushSync.
 class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     static weak var shared: ViewController?
 
-    private static let amBase = "https://6472208031sam-cloud.github.io/bus-stop-alerts/"
-    private static let pmBase = "https://6472208031sam-cloud.github.io/bus-stop-alerts/pm.html"
+    private static let pageBase = "https://6472208031sam-cloud.github.io/bus-stop-alerts/"
 
     private var webView: WKWebView!
-    /// "am" or "pm" — which page is currently loaded.
-    private var currentPage = "am"
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -42,16 +40,11 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
             self?.eval("if (typeof nativeAutoStarted === 'function') { try { nativeAutoStarted(); } catch(e){} }")
         }
 
-        // Cold start from a schedule notification goes straight to that page.
-        loadPage(LocationTracker.shared.pendingScheduledPage ?? "am")
-    }
-
-    /// Loads the AM or PM page, with a cache-buster like Android's
-    /// MainActivity (the hosted pages change often: alert channel, tuning).
-    func loadPage(_ page: String) {
-        currentPage = (page == "pm") ? "pm" : "am"
-        let base = currentPage == "pm" ? Self.pmBase : Self.amBase
-        var comps = URLComponents(string: base)!
+        // Load the single page (with a cache-buster like Android's
+        // MainActivity — the hosted page changes often: alert channel,
+        // tuning). A pending schedule tap is handled after load by
+        // startScheduledRideIfPending(); the route never comes from the URL.
+        var comps = URLComponents(string: Self.pageBase)!
         comps.queryItems = [URLQueryItem(name: "v", value: "\(Int(Date().timeIntervalSince1970))")]
         webView.load(URLRequest(url: comps.url!))
     }
@@ -59,17 +52,10 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     // MARK: - Page lifecycle (mirrors MainActivity)
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // Track which page actually loaded (the user may have used the
-        // in-page AM/PM switcher since the last load).
-        if let url = webView.url?.absoluteString, url.contains("pm.html?v=3.2") {
-            currentPage = "pm"
-        } else {
-            currentPage = "am"
-        }
         // The page arms its own schedule on open (pushScheduleToNative) and
-        // stops a mismatched native ride via getStatus() — same as Android.
-        // Here we only handle the leftovers: a tapped schedule notification,
-        // and a native ride the freshly loaded page hasn't synced with yet.
+        // syncs with any active native ride via getStatus(), adopting the
+        // ride's tab — same as Android. Here we only handle the leftovers:
+        // a tapped schedule notification, and auto-start on launch.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self = self else { return }
             if !self.startScheduledRideIfPending() {
@@ -80,21 +66,23 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         }
     }
 
-    /// Starts the ride for the page named by a tapped schedule notification.
-    /// Returns true if the tap was consumed (ride started or navigation begun).
+    /// Starts the ride for the route named by a tapped schedule
+    /// notification, from the stored config for that route — no page
+    /// navigation (the single page hosts both routes and adopts the ride's
+    /// tab from the sync that follows). Returns true if the tap was
+    /// consumed. The pending tab is consumed exactly once, and a running
+    /// ride is never clobbered (mirrors Android's ACTION_SCHEDULE_START,
+    /// which ignores the alarm while tracking): if a ride is already
+    /// active — same route or not — the tap just resyncs the page to it.
     @discardableResult
     func startScheduledRideIfPending() -> Bool {
-        guard let page = LocationTracker.shared.pendingScheduledPage else { return false }
-        // Wrong page loaded: navigate there first; didFinish re-runs this.
-        if page != currentPage {
-            loadPage(page)
+        guard let page = LocationTracker.shared.pendingScheduledTab else { return false }
+        LocationTracker.shared.pendingScheduledTab = nil
+        if LocationTracker.shared.isTracking {
+            LocationTracker.shared.pushSyncIfActive()
             return true
         }
-        LocationTracker.shared.pendingScheduledPage = nil
-        // Never clobber an already-running ride (mirrors Android's
-        // ACTION_SCHEDULE_START, which ignores the alarm while tracking).
-        guard !LocationTracker.shared.isTracking,
-              let cfg = ScheduleManager.shared.configJSON(forPage: page),
+        guard let cfg = ScheduleManager.shared.configJSON(forPage: page),
               LocationTracker.shared.startRide(configJson: cfg, scheduled: true) == "started"
         else { return false }
         eval("if (typeof nativeAutoStarted === 'function') { try { nativeAutoStarted(); } catch(e){} }")
