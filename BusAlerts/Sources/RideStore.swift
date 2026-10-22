@@ -115,6 +115,9 @@ final class RideState {
         return [
             "page": page,
             "topic": topic,
+            "deviceId": deviceId,
+            "deviceLabel": deviceLabel,
+            "myStop": ["am": myStopAm, "pm": myStopPm],
             "followerOn": followerOn,
             "sound": sound,
             "snapDistance": snapDistance,
