@@ -55,13 +55,12 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         // The page arms its own schedule on open (pushScheduleToNative) and
         // syncs with any active native ride via getStatus(), adopting the
         // ride's tab — same as Android. Here we only handle the leftovers:
-        // a tapped schedule notification, and auto-start on launch.
+        // a tapped schedule notification. Launch auto-start is the page's
+        // own status-driven decision.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self = self else { return }
             if !self.startScheduledRideIfPending() {
                 LocationTracker.shared.pushSyncIfActive()
-                // Auto-start tracking on launch (matches Android).
-                self.eval("(function(){ try { if (typeof startTracking==='function') startTracking(); } catch(e){} })()")
             }
         }
     }
