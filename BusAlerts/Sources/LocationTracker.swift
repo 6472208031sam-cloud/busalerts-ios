@@ -20,14 +20,19 @@ final class LocationTracker: NSObject {
 
     private let manager = CLLocationManager()
     private var ride: RideState?
-    // Phase 4 (observe-only): one-stop restore recovery evaluation.
-    // Armed ONLY in restore() when a stored active ride resumes (restore
-    // is launch-only, so this is inherently process-death-only). Evaluated
-    // once on the first fix handleLocation processes, or logged
-    // immediately at restore for the final-stop case. It NEVER mutates
-    // ride state, marks stops, sends ntfy, or changes the snapshot —
-    // the only output is one RECOVERY native log line.
-    private var recoveryPending: (rideId: String, route: String,
+    // Phase 4 (ENABLED): one-stop restore recovery. Armed ONLY in
+    // restore() when a stored active ride resumes (restore is
+    // launch-only, so this is inherently process-death-only). Evaluated
+    // once on the first FRESH fix handleLocation processes, or logged
+    // immediately at restore for the no-established-position / final-
+    // stop cases. A progression verdict with recovery credit available
+    // APPLIES the advance: stop N is marked reached+skipped silently
+    // (the skipNext marking mechanics, applied directly — no arrival
+    // popup, no arrival ntfy, no My Stop event, no on-bus synthesis),
+    // the credit is spent, and the same fix then continues through the
+    // normal sequential logic against the new next stop. At most ONE
+    // stop is advanced per restore.
+    private var recoveryPending: (rideId: String, route: String, nextIndex: Int,
                                   nextLabel: String, nextLat: Double, nextLng: Double,
                                   followingLabel: String, followingLat: Double, followingLng: Double)?
     private var nearCount = 0
@@ -445,6 +450,9 @@ final class LocationTracker: NSObject {
         r.completed = false
         r.completedAt = nil
         r.scheduledRide = scheduled
+        // Phase 4: a fresh ride always starts with its recovery credit
+        // available, regardless of anything the config JSON carried.
+        r.recoveryCreditAvailable = true
         persist()
         beginTracking()
     }
@@ -739,17 +747,23 @@ final class LocationTracker: NSObject {
         // No stamping here: identity loads with the state (a legacy state
         // has none and keeps none).
         nativeLog("SNAP", snapLogLine(ride: r, state: "active"))
-        // Phase 4 (observe-only): arm the one-shot recovery evaluation
-        // for this restored ride (final-stop case logs here, at restore).
+        // Phase 4 (enabled): arm the one-shot recovery evaluation for
+        // this restored ride (the no-established-position and
+        // final-stop cases are judged and logged here, at restore).
         armRecoveryEvaluation(for: r)
         beginTracking()
     }
 
-    /// Phase 4 (observe-only): arm the recovery evaluation for a ride
-    /// restored in restore(). Captures the next unreached stop N (first
-    /// stop neither reached nor skipped) and the following unreached
-    /// stop after it. If N has no following unreached stop, logs the
-    /// final-stop verdict immediately and arms nothing.
+    /// Phase 4 (enabled): arm the recovery evaluation for a ride
+    /// restored in restore(). Captures the next unpassed stop N (first
+    /// stop neither reached nor skipped) and the following unpassed
+    /// stop after it. Judge order at restore:
+    /// (a) ESTABLISHED-POSITION GUARD — if no stop is already passed
+    ///     (reached or skipped), first-stop misses are not covered:
+    ///     log would-not/no-established-position here and arm nothing.
+    /// (b) Else if N has no following unpassed stop, log the final-stop
+    ///     verdict here and arm nothing.
+    /// Otherwise arm the one-shot evaluation for the first fresh fix.
     private func armRecoveryEvaluation(for r: RideState) {
         recoveryPending = nil
         guard let nextIdx = r.stops.firstIndex(where: { !$0.reached && !$0.skipped }) else { return }
@@ -762,20 +776,41 @@ final class LocationTracker: NSObject {
             }
         }
         let id8 = String(r.rideId.prefix(8))
+        // (a) Established-position guard (see doc comment above).
+        if !r.stops.contains(where: { $0.reached || $0.skipped }) {
+            nativeLog("RECOVERY", "verdict=would-not ride=\(id8) route=\(r.page) next=\(next.label) following=\(following?.label ?? "-") distNext=-1 distFollowing=-1 acc=-1 reason=no-established-position fixSource=none")
+            return
+        }
+        // (b) Final stop: judged at restore, nothing armed.
         guard let fol = following else {
             nativeLog("RECOVERY", "verdict=would-not ride=\(id8) route=\(r.page) next=\(next.label) following=- distNext=-1 distFollowing=-1 acc=-1 reason=final-stop fixSource=none")
             return
         }
-        recoveryPending = (rideId: r.rideId, route: r.page,
+        recoveryPending = (rideId: r.rideId, route: r.page, nextIndex: nextIdx,
                            nextLabel: next.label, nextLat: next.lat, nextLng: next.lng,
                            followingLabel: fol.label, followingLat: fol.lat, followingLng: fol.lng)
     }
 
-    /// Phase 4 (observe-only): evaluate the armed recovery check on the
-    /// first fix processed after restore, then disarm (one-shot). Only
-    /// writes the RECOVERY log line; never mutates anything.
+    /// Phase 4 (enabled): evaluate the armed recovery check on the
+    /// first FRESH fix processed after restore, then disarm (one-shot).
+    /// A fix whose own CLLocation timestamp is more than 30s old is a
+    /// stale cached fix: it is ignored entirely and the evaluation
+    /// STAYS ARMED for the next fix. On a progression verdict with the
+    /// ride's recovery credit available, the advance is APPLIED here:
+    /// stop N is marked reached+skipped directly (the exact marking
+    /// mechanics of skipNext(), minus its entry point — skipNext()'s
+    /// skip-final ENDED branch can never fire from here because an
+    /// advance is only applied when a following unpassed stop exists,
+    /// re-checked below), the credit is spent, and the ride persists.
+    /// The marking path contains no arrival side-effects: no popup /
+    /// local notification, no ntfy, no sound, no My Stop event, no
+    /// on-bus synthesis. handleLocation then keeps processing this same
+    /// fix against the NEW next stop, so a genuine arrival at the
+    /// following stop can still fire from it.
     private func evaluateRecoveryIfArmed(loc: CLLocation, accuracy: Double, ride r: RideState) {
         guard let pending = recoveryPending else { return }
+        // FIX FRESHNESS: stale cached fixes are ignored; stay armed.
+        if Date().timeIntervalSince(loc.timestamp) > 30 { return }
         recoveryPending = nil
         // A different ride than the restored one must not be evaluated.
         guard pending.rideId == r.rideId else { return }
@@ -785,11 +820,40 @@ final class LocationTracker: NSObject {
         let id8 = String(pending.rideId.prefix(8))
         if accuracy < 0 || accuracy > 100 {
             nativeLog("RECOVERY", "verdict=would-not ride=\(id8) route=\(pending.route) next=\(pending.nextLabel) following=\(pending.followingLabel) distNext=\(distNext) distFollowing=\(distFollowing) acc=\(acc) reason=poor-accuracy fixSource=first-fix")
-        } else if distNext - distFollowing >= 20 {
-            nativeLog("RECOVERY", "verdict=would-advance ride=\(id8) route=\(pending.route) next=\(pending.nextLabel) following=\(pending.followingLabel) distNext=\(distNext) distFollowing=\(distFollowing) acc=\(acc) reason=progression fixSource=first-fix")
-        } else {
-            nativeLog("RECOVERY", "verdict=would-not ride=\(id8) route=\(pending.route) next=\(pending.nextLabel) following=\(pending.followingLabel) distNext=\(distNext) distFollowing=\(distFollowing) acc=\(acc) reason=no-progression fixSource=first-fix")
+            return
         }
+        guard distNext - distFollowing >= 20 else {
+            nativeLog("RECOVERY", "verdict=would-not ride=\(id8) route=\(pending.route) next=\(pending.nextLabel) following=\(pending.followingLabel) distNext=\(distNext) distFollowing=\(distFollowing) acc=\(acc) reason=no-progression fixSource=first-fix")
+            return
+        }
+        // Progression judged. Without credit, nothing is applied (the
+        // one-shot is still consumed — it was disarmed above).
+        guard r.recoveryCreditAvailable else {
+            nativeLog("RECOVERY", "verdict=would-advance ride=\(id8) route=\(pending.route) next=\(pending.nextLabel) following=\(pending.followingLabel) distNext=\(distNext) distFollowing=\(distFollowing) acc=\(acc) reason=credit-spent fixSource=first-fix")
+            return
+        }
+        // Apply-time safety re-checks: N must still be the first
+        // unpassed stop, and a following unpassed stop must still exist
+        // (structurally bars any skip-final / ride-end from recovery).
+        let currentFirst = r.stops.firstIndex(where: { !$0.reached && !$0.skipped })
+        var hasFollowing = false
+        if let cf = currentFirst, cf + 1 < r.stops.count {
+            hasFollowing = ((cf + 1)..<r.stops.count).contains(where: { !r.stops[$0].reached && !r.stops[$0].skipped })
+        }
+        guard currentFirst == pending.nextIndex, hasFollowing else {
+            nativeLog("RECOVERY", "verdict=would-advance ride=\(id8) route=\(pending.route) next=\(pending.nextLabel) following=\(pending.followingLabel) distNext=\(distNext) distFollowing=\(distFollowing) acc=\(acc) reason=progression fixSource=first-fix")
+            return
+        }
+        // APPLY: mark N passed-but-silent, spend the credit, persist
+        // (persist() bumps the snapshot revision and saves via
+        // RideStore). No other calls — see the doc comment above.
+        let stop = r.stops[pending.nextIndex]
+        stop.reached = true
+        stop.skipped = true
+        r.recoveryCreditAvailable = false
+        nativeLog("RECOVERY", "verdict=advanced ride=\(id8) route=\(pending.route) next=\(pending.nextLabel) following=\(pending.followingLabel) distNext=\(distNext) distFollowing=\(distFollowing) acc=\(acc) reason=progression fixSource=first-fix")
+        persist()
+        pushSync(toast: nil)
     }
 
     // MARK: - Internals
@@ -812,6 +876,9 @@ final class LocationTracker: NSObject {
             cfg.startSource = r.startSource
             cfg.routeFingerprint = r.routeFingerprint
             cfg.revision = r.revision
+            // Same ride continuing (Phase 4): its recovery credit
+            // state carries over too.
+            cfg.recoveryCreditAvailable = r.recoveryCreditAvailable
         } else {
             // No merge: identity must not leak in from the incoming JSON
             // (a stored schedule config is serialized via toJSON and can
@@ -823,6 +890,9 @@ final class LocationTracker: NSObject {
             cfg.startSource = ""
             cfg.routeFingerprint = ""
             cfg.revision = 0
+            // No merge: a previous ride's spent recovery credit must
+            // not leak in either (Phase 4).
+            cfg.recoveryCreditAvailable = true
         }
         ride = cfg
         ScheduleManager.shared.apply(config: cfg)
@@ -881,9 +951,12 @@ final class LocationTracker: NSObject {
     // MARK: - Arrival detection (port of TrackingService.handleLocation)
 
     private func handleLocation(_ loc: CLLocation, accuracy: Double, ride r: RideState) {
-        // Phase 4 (observe-only): first fix after a restore evaluates
-        // the armed recovery check before anything here can mutate the
-        // ride (e.g. snap-forward). Log-only; disarms itself one-shot.
+        // Phase 4 (enabled): first FRESH fix after a restore evaluates
+        // the armed recovery check before anything else here can mutate
+        // the ride (e.g. snap-forward). If it applies an advance, the
+        // code below then processes this same fix against the NEW next
+        // stop (idx is computed after this call) — a genuine arrival at
+        // the following stop can still fire from this fix.
         evaluateRecoveryIfArmed(loc: loc, accuracy: accuracy, ride: r)
         let lat = loc.coordinate.latitude
         let lng = loc.coordinate.longitude
@@ -937,10 +1010,10 @@ final class LocationTracker: NSObject {
         let limit = stop.acc ?? 50
         if distance <= stop.radius && accuracy <= limit {
             // Tier 1: confident fix — arrive immediately.
-            arrive(at: idx)
+            arrive(at: idx, genuineGPS: true)
         } else if distance <= 15 && accuracy <= 150 {
             // Very close to the pin — trust it even with moderate accuracy.
-            arrive(at: idx)
+            arrive(at: idx, genuineGPS: true)
         } else if accuracy <= 200 && distance <= stop.radius + accuracy {
             // Tier 2: poor accuracy (phone pocketed) — 3 consecutive fixes
             // near the stop confirm the arrival. A GPS jump won't persist.
@@ -949,7 +1022,7 @@ final class LocationTracker: NSObject {
             if nearCount >= 3 {
                 nearCount = 0
                 nearTargetIdx = -1
-                arrive(at: idx)
+                arrive(at: idx, genuineGPS: true)
             }
         } else {
             nearCount = 0
@@ -1012,11 +1085,21 @@ final class LocationTracker: NSObject {
         if shouldLog { lastCpLogAt = now }
     }
 
-    private func arrive(at idx: Int) {
+    /// Arrival at a stop. `genuineGPS` is true ONLY for the calls from
+    /// handleLocation's sequential GPS tiers — the one genuine-arrival
+    /// code path. Manual markReached() calls with the default false, so
+    /// it (like skipNext, snap-forward and the recovery advance, none
+    /// of which come through here with genuineGPS) never regains the
+    /// Phase 4 recovery credit; a genuine GPS arrival does.
+    private func arrive(at idx: Int, genuineGPS: Bool = false) {
         guard let r = ride, idx < r.stops.count else { return }
         nearCount = 0
         nearTargetIdx = -1
         onBusStop = nil
+        // Phase 4: a genuine GPS arrival REGAINS the recovery credit.
+        // Set before this function's persist() below so it is saved
+        // with the arrival.
+        if genuineGPS { r.recoveryCreditAvailable = true }
         let stop = r.stops[idx]
         stop.reached = true
         let isFinal = idx == r.stops.count - 1

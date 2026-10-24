@@ -88,6 +88,12 @@ final class RideState {
     var endedAt: Int = 0            // epoch milliseconds
     var endReason = ""
     var ending = false
+    // Phase 4 (enabled): one-stop restore-recovery credit. One per ride:
+    // spent when a recovery advance is applied, regained only on a
+    // genuine GPS arrival. Persisted with the ride so it survives
+    // process death; a pre-v42 persisted state has no such key and
+    // decodes to available (true).
+    var recoveryCreditAvailable = true
 
     init() {}
 
@@ -136,6 +142,7 @@ final class RideState {
         }
         endReason = json["endReason"] as? String ?? ""
         ending = json["ending"] as? Bool ?? false
+        recoveryCreditAvailable = json["recoveryCreditAvailable"] as? Bool ?? true
         completed = json["completed"] as? Bool ?? false
         if let ms = json["completedAt"] as? Double {
             completedAt = Date(timeIntervalSince1970: ms / 1000)
@@ -173,6 +180,7 @@ final class RideState {
             "endedAt": endedAt,
             "endReason": endReason,
             "ending": ending,
+            "recoveryCreditAvailable": recoveryCreditAvailable,
             "completed": completed,
             "completedAt": completedAt.map { $0.timeIntervalSince1970 * 1000 } ?? NSNull(),
             "stops": stops.map { $0.toJSON() }
