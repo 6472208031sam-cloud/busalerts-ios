@@ -197,11 +197,14 @@ final class LocationTracker: NSObject {
         let now = Date()
         let nowMs = Int(now.timeIntervalSince1970 * 1000)
 
-        // A ride with a fresh fix is in use — its own event handlers
+        // A live tracked ride is in use — its own event handlers
         // govern it, so the disposition rules (b), (d), (e) skip it.
+        // (Fix age does not matter: a stationary phone may go minutes
+        // between fixes while its ride is genuinely still tracking.
+        // Cold state is unaffected — at launch restore() reconciles
+        // with ride == nil, so isLive is false there.)
         var liveProgressing = false
-        if isLive, let lastFix = subject.lastFixTime,
-           now.timeIntervalSince(lastFix) < 30 {
+        if isLive {
             liveProgressing = true
         }
 
