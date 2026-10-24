@@ -20,6 +20,16 @@ final class LocationTracker: NSObject {
 
     private let manager = CLLocationManager()
     private var ride: RideState?
+    // Phase 4 (observe-only): one-stop restore recovery evaluation.
+    // Armed ONLY in restore() when a stored active ride resumes (restore
+    // is launch-only, so this is inherently process-death-only). Evaluated
+    // once on the first fix handleLocation processes, or logged
+    // immediately at restore for the final-stop case. It NEVER mutates
+    // ride state, marks stops, sends ntfy, or changes the snapshot —
+    // the only output is one RECOVERY native log line.
+    private var recoveryPending: (rideId: String, route: String,
+                                  nextLabel: String, nextLat: Double, nextLng: Double,
+                                  followingLabel: String, followingLat: Double, followingLng: Double)?
     private var nearCount = 0
     private var nearTargetIdx = -1
     private var pendingConfig: String?
@@ -729,7 +739,57 @@ final class LocationTracker: NSObject {
         // No stamping here: identity loads with the state (a legacy state
         // has none and keeps none).
         nativeLog("SNAP", snapLogLine(ride: r, state: "active"))
+        // Phase 4 (observe-only): arm the one-shot recovery evaluation
+        // for this restored ride (final-stop case logs here, at restore).
+        armRecoveryEvaluation(for: r)
         beginTracking()
+    }
+
+    /// Phase 4 (observe-only): arm the recovery evaluation for a ride
+    /// restored in restore(). Captures the next unreached stop N (first
+    /// stop neither reached nor skipped) and the following unreached
+    /// stop after it. If N has no following unreached stop, logs the
+    /// final-stop verdict immediately and arms nothing.
+    private func armRecoveryEvaluation(for r: RideState) {
+        recoveryPending = nil
+        guard let nextIdx = r.stops.firstIndex(where: { !$0.reached && !$0.skipped }) else { return }
+        let next = r.stops[nextIdx]
+        var following: RideStop? = nil
+        if nextIdx + 1 < r.stops.count {
+            for i in (nextIdx + 1)..<r.stops.count where !r.stops[i].reached && !r.stops[i].skipped {
+                following = r.stops[i]
+                break
+            }
+        }
+        let id8 = String(r.rideId.prefix(8))
+        guard let fol = following else {
+            nativeLog("RECOVERY", "verdict=would-not ride=\(id8) route=\(r.page) next=\(next.label) following=- distNext=-1 distFollowing=-1 acc=-1 reason=final-stop fixSource=none")
+            return
+        }
+        recoveryPending = (rideId: r.rideId, route: r.page,
+                           nextLabel: next.label, nextLat: next.lat, nextLng: next.lng,
+                           followingLabel: fol.label, followingLat: fol.lat, followingLng: fol.lng)
+    }
+
+    /// Phase 4 (observe-only): evaluate the armed recovery check on the
+    /// first fix processed after restore, then disarm (one-shot). Only
+    /// writes the RECOVERY log line; never mutates anything.
+    private func evaluateRecoveryIfArmed(loc: CLLocation, accuracy: Double, ride r: RideState) {
+        guard let pending = recoveryPending else { return }
+        recoveryPending = nil
+        // A different ride than the restored one must not be evaluated.
+        guard pending.rideId == r.rideId else { return }
+        let distNext = Int(loc.distance(from: CLLocation(latitude: pending.nextLat, longitude: pending.nextLng)))
+        let distFollowing = Int(loc.distance(from: CLLocation(latitude: pending.followingLat, longitude: pending.followingLng)))
+        let acc = Int(accuracy)
+        let id8 = String(pending.rideId.prefix(8))
+        if accuracy < 0 || accuracy > 100 {
+            nativeLog("RECOVERY", "verdict=would-not ride=\(id8) route=\(pending.route) next=\(pending.nextLabel) following=\(pending.followingLabel) distNext=\(distNext) distFollowing=\(distFollowing) acc=\(acc) reason=poor-accuracy fixSource=first-fix")
+        } else if distNext - distFollowing >= 20 {
+            nativeLog("RECOVERY", "verdict=would-advance ride=\(id8) route=\(pending.route) next=\(pending.nextLabel) following=\(pending.followingLabel) distNext=\(distNext) distFollowing=\(distFollowing) acc=\(acc) reason=progression fixSource=first-fix")
+        } else {
+            nativeLog("RECOVERY", "verdict=would-not ride=\(id8) route=\(pending.route) next=\(pending.nextLabel) following=\(pending.followingLabel) distNext=\(distNext) distFollowing=\(distFollowing) acc=\(acc) reason=no-progression fixSource=first-fix")
+        }
     }
 
     // MARK: - Internals
@@ -821,6 +881,10 @@ final class LocationTracker: NSObject {
     // MARK: - Arrival detection (port of TrackingService.handleLocation)
 
     private func handleLocation(_ loc: CLLocation, accuracy: Double, ride r: RideState) {
+        // Phase 4 (observe-only): first fix after a restore evaluates
+        // the armed recovery check before anything here can mutate the
+        // ride (e.g. snap-forward). Log-only; disarms itself one-shot.
+        evaluateRecoveryIfArmed(loc: loc, accuracy: accuracy, ride: r)
         let lat = loc.coordinate.latitude
         let lng = loc.coordinate.longitude
         r.lastFixTime = Date()
