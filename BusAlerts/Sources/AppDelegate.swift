@@ -91,6 +91,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         refreshTask.expirationHandler = {
             LocationTracker.shared.schedLog("BG refresh expired before re-arm finished")
         }
+        // Reconcile ride state before re-arming (Phase 2): a ride left
+        // stale/legacy/ending while the app was away is disposed of here.
+        LocationTracker.shared.reconcile()
         ScheduleManager.shared.schedule {
             scheduleAppRefresh()
             refreshTask.setTaskCompleted(success: true)

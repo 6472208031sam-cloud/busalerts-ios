@@ -70,24 +70,15 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     /// notification, from the stored config for that route — no page
     /// navigation (the single page hosts both routes and adopts the ride's
     /// tab from the sync that follows). Returns true if the tap was
-    /// consumed. The pending tab is consumed exactly once, and a running
-    /// ride is never clobbered (mirrors Android's ACTION_SCHEDULE_START,
-    /// which ignores the alarm while tracking): if a ride is already
-    /// active — same route or not — the tap just resyncs the page to it.
+    /// consumed. The pending tab is consumed exactly once; everything else
+    /// (currency gate, reconcile, check-first start, the nativeAutoStarted
+    /// eval and the sync) lives in LocationTracker.handleScheduleTap —
+    /// a running ride is never clobbered by a schedule tap.
     @discardableResult
     func startScheduledRideIfPending() -> Bool {
         guard let page = LocationTracker.shared.pendingScheduledTab else { return false }
         LocationTracker.shared.pendingScheduledTab = nil
-        if LocationTracker.shared.isTracking {
-            LocationTracker.shared.pushSyncIfActive()
-            return true
-        }
-        guard let cfg = ScheduleManager.shared.configJSON(forPage: page),
-              LocationTracker.shared.startRide(configJson: cfg, scheduled: true) == "started"
-        else { return false }
-        eval("if (typeof nativeAutoStarted === 'function') { try { nativeAutoStarted(); } catch(e){} }")
-        LocationTracker.shared.pushSync(toast: nil)
-        return true
+        return LocationTracker.shared.handleScheduleTap(page: page)
     }
 
     private func eval(_ js: String) {

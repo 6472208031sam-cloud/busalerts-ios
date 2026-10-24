@@ -2,8 +2,8 @@ import Foundation
 
 /// Exposes `window.NativeBridge` to the web pages with the SAME interface as
 /// the Android app: startRide(configJson) -> "started"/"permission_needed"/"error",
-/// stopRide(), updateConfig(configJson), getStatus() -> JSON string,
-/// hasBackgroundPermission() -> Bool.
+/// stopRide(), markReached(), skipNext(), updateConfig(configJson),
+/// getStatus() -> JSON string, hasBackgroundPermission() -> Bool.
 ///
 /// Transport note: iOS's WKScriptMessageHandler (window.webkit.messageHandlers)
 /// is fire-and-forget and CANNOT return a value to JavaScript, but the pages
@@ -41,6 +41,7 @@ final class NativeBridge {
         },
         stopRide: function() { call('stopRide'); },
         markReached: function() { call('markReached'); },
+        skipNext: function() { call('skipNext'); },
         updateConfig: function(cfg) { call('updateConfig', cfg); },
         getStatus: function() {
           var r = call('getStatus');
@@ -76,6 +77,9 @@ final class NativeBridge {
             return jsonResponse(nil)
         case "markReached":
             LocationTracker.shared.markReached()
+            return jsonResponse(nil)
+        case "skipNext":
+            LocationTracker.shared.skipNext()
             return jsonResponse(nil)
         case "updateConfig":
             LocationTracker.shared.updateConfig(configJson: arg)

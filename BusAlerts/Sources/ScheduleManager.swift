@@ -29,16 +29,40 @@ final class ScheduleManager {
     /// applyScheduleSettings() — safe to call with no active ride.
     func apply(config: RideState) {
         let pageKey = config.page == "pm" ? "pm" : "am"
-        LocationTracker.shared.schedLog("apply page=\(pageKey) enabled=\(config.schedEnabled) on1=\(config.schedOn1) on2=\(config.schedOn2) weekdaysOnly=\(config.schedWeekdaysOnly)")
+        LocationTracker.shared.schedLog("apply page=\(pageKey) enabled=\(config.schedEnabled) on1=\(config.schedOn1) off1=\(config.schedOff1) on2=\(config.schedOn2) off2=\(config.schedOff2) weekdaysOnly=\(config.schedWeekdaysOnly)")
         if let data = try? JSONSerialization.data(withJSONObject: config.toJSON()) {
             UserDefaults.standard.set(data, forKey: "busalerts_sched_config_" + pageKey)
         }
         let d = UserDefaults.standard
         d.set(config.schedEnabled, forKey: "busalerts_sched_enabled")
         d.set(config.schedOn1, forKey: "busalerts_sched_on1")
+        d.set(config.schedOff1, forKey: "busalerts_sched_off1")
         d.set(config.schedOn2, forKey: "busalerts_sched_on2")
+        d.set(config.schedOff2, forKey: "busalerts_sched_off2")
         d.set(config.schedWeekdaysOnly, forKey: "busalerts_sched_weekdays")
         schedule()
+    }
+
+    /// The most recent schedule window for a page (Phase 2): stored
+    /// UserDefaults values win, then the stored per-page config JSON,
+    /// then the defaults (AM 480/600, PM 930/1110). integer(forKey:)
+    /// returns 0 when unset, so 0 counts as unset at every step.
+    func latestWindow(forPage page: String) -> (on: Int, off: Int) {
+        let pm = page == "pm"
+        let d = UserDefaults.standard
+        var on = d.integer(forKey: pm ? "busalerts_sched_on2" : "busalerts_sched_on1")
+        var off = d.integer(forKey: pm ? "busalerts_sched_off2" : "busalerts_sched_off1")
+        if on == 0 || off == 0 {
+            if let json = configJSON(forPage: pm ? "pm" : "am"),
+               let data = json.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if on == 0, let v = obj[pm ? "schedOn2" : "schedOn1"] as? Int { on = v }
+                if off == 0, let v = obj[pm ? "schedOff2" : "schedOff1"] as? Int { off = v }
+            }
+        }
+        if on == 0 { on = pm ? 930 : 480 }
+        if off == 0 { off = pm ? 1110 : 600 }
+        return (on: on, off: off)
     }
 
     /// Full config JSON last saved for a page ("am"/"pm").

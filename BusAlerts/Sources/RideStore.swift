@@ -81,6 +81,13 @@ final class RideState {
     /// kept (not deleted) so the WebView can show the arrived UI on resume.
     var completed = false
     var completedAt: Date?
+    // Unified ride-state lifecycle (Phase 2): an ended ride is torn down
+    // and preserved in EndedStore (its final state has ended=true); a ride
+    // caught mid got-off teardown carries ending=true until finalized.
+    var ended = false
+    var endedAt: Int = 0            // epoch milliseconds
+    var endReason = ""
+    var ending = false
 
     init() {}
 
@@ -121,6 +128,14 @@ final class RideState {
         } else if let v = json["revision"] as? Double {
             revision = Int(v)
         }
+        ended = json["ended"] as? Bool ?? false
+        if let v = json["endedAt"] as? Int {
+            endedAt = v
+        } else if let v = json["endedAt"] as? Double {
+            endedAt = Int(v)
+        }
+        endReason = json["endReason"] as? String ?? ""
+        ending = json["ending"] as? Bool ?? false
         completed = json["completed"] as? Bool ?? false
         if let ms = json["completedAt"] as? Double {
             completedAt = Date(timeIntervalSince1970: ms / 1000)
@@ -154,6 +169,10 @@ final class RideState {
             "startSource": startSource,
             "routeFingerprint": routeFingerprint,
             "revision": revision,
+            "ended": ended,
+            "endedAt": endedAt,
+            "endReason": endReason,
+            "ending": ending,
             "completed": completed,
             "completedAt": completedAt.map { $0.timeIntervalSince1970 * 1000 } ?? NSNull(),
             "stops": stops.map { $0.toJSON() }
@@ -225,6 +244,97 @@ enum RideStore {
         }
         UserDefaults.standard.removeObject(forKey: key)
     }
+
+    /// True when any persisted ride state is present (file or legacy
+    /// UserDefaults). load() returns nil for both missing and corrupt,
+    /// so reconcile() uses this to distinguish the two.
+    static func storedDataExists() -> Bool {
+        if let url = fileURL, FileManager.default.fileExists(atPath: url.path) {
+            return true
+        }
+        return UserDefaults.standard.data(forKey: key) != nil
+    }
+}
+
+/// Persists the most recent ended ride (Phase 2), same atomic-file pattern
+/// as RideStore. An ended ride is a lifecycle record: statusJson() serves
+/// it (active=false, ended=true) until a fresh start or Stop clears it.
+enum EndedStore {
+    private static let key = "busalerts_ended_state"
+
+    private static var fileURL: URL? {
+        guard let dir = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true) else { return nil }
+        return dir.appendingPathComponent(key + ".json")
+    }
+
+    static func save(_ ride: RideState) {
+        guard let data = try? JSONSerialization.data(withJSONObject: ride.toJSON()),
+              let url = fileURL else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    static func load() -> RideState? {
+        if let url = fileURL, FileManager.default.fileExists(atPath: url.path) {
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return decode(data)
+        }
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return decode(data)
+    }
+
+    private static func decode(_ data: Data) -> RideState? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let stops = obj["stops"] as? [[String: Any]], !stops.isEmpty else {
+            return nil
+        }
+        return RideState(json: obj)
+    }
+
+    static func clear() {
+        if let url = fileURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+}
+
+// MARK: - Toronto time helpers (Phase 2)
+
+let torontoTimeZone = TimeZone(identifier: "America/Toronto")!
+
+private let torontoDayFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.calendar = Calendar(identifier: .gregorian)
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = torontoTimeZone
+    f.dateFormat = "yyyy-MM-dd"
+    return f
+}()
+
+/// Toronto calendar day ("yyyy-MM-dd") for a date.
+func torontoDayKey(_ date: Date) -> String {
+    return torontoDayFormatter.string(from: date)
+}
+
+/// Toronto calendar day for an epoch-milliseconds timestamp.
+func torontoDayKey(_ epochMs: Int) -> String {
+    return torontoDayKey(Date(timeIntervalSince1970: Double(epochMs) / 1000))
+}
+
+/// Minutes since Toronto midnight for a date.
+func torontoMinutes(_ date: Date) -> Int {
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = torontoTimeZone
+    return cal.component(.hour, from: date) * 60 + cal.component(.minute, from: date)
+}
+
+/// Minutes since Toronto midnight for an epoch-milliseconds timestamp.
+func torontoMinutes(_ epochMs: Int) -> Int {
+    return torontoMinutes(Date(timeIntervalSince1970: Double(epochMs) / 1000))
 }
 
 func haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double) -> Double {
