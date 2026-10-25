@@ -306,7 +306,7 @@ final class LocationTracker: NSObject {
         // Housekeeping: an expired completed record is dropped (silent).
         // This mutation moved here from statusJson().
         if subject.completed, let at = subject.completedAt,
-           now.timeIntervalSince(at) >= 15 * 60 {
+           now.timeIntervalSince(at) >= 60 {
             RideStore.clear()
             if isLive { teardownLiveRide() }
         }
@@ -591,7 +591,7 @@ final class LocationTracker: NSObject {
             return statusPayload(ride: r, active: true)
         }
         if let r = RideStore.load(), !r.stops.isEmpty, r.completed {
-            if let at = r.completedAt, Date().timeIntervalSince(at) < 15 * 60 {
+            if let at = r.completedAt, Date().timeIntervalSince(at) < 60 {
                 return statusPayload(ride: r, active: false)
             }
         }
