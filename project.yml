@@ -23,7 +23,7 @@ targets:
     info:
       path: BusAlerts/Info.plist
       properties:
-        CFBundleDisplayName: Bus Stop Alerts v44
+        CFBundleDisplayName: Bus Stop Alerts v45
         CFBundleShortVersionString: "11.0"
         CFBundleVersion: "5"
         ITSAppUsesNonExemptEncryption: false
@@ -31,9 +31,29 @@ targets:
         NSLocationAlwaysAndWhenInUseUsageDescription: "Bus Stop Alerts tracks your ride in the background so stop alerts keep working when the screen is off or the app is minimized."
         UIBackgroundModes: [location, audio, fetch]
         BGTaskSchedulerPermittedIdentifiers: [io.github.busstopalerts.refresh]
+        NSSupportsLiveActivities: true
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    dependencies:
+      - target: BusAlertsWidgets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.busstopalerts
+        SWIFT_VERSION: "5.0"
+  BusAlertsWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: BusAlerts/Widgets
+      - path: BusAlerts/Sources/RideActivityAttributes.swift
+    info:
+      path: BusAlerts/Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Bus Stop Alerts Widgets
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.busstopalerts.widgets
         SWIFT_VERSION: "5.0"

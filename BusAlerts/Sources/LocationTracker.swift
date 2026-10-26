@@ -368,11 +368,11 @@ final class LocationTracker: NSObject {
         }
         let cfg = RideState(json: obj)
         // Scheduled starts carry a currency gate: an event outside
-        // [on-15, off] of its page's latest window is stale — ignore it.
+        // [on-5, off] of its page's latest window is stale — ignore it.
         if scheduled {
             let window = ScheduleManager.shared.latestWindow(forPage: cfg.page)
             let nowMin = torontoMinutes(Date())
-            if nowMin < window.on - 15 || nowMin > window.off {
+            if nowMin < window.on - 5 || nowMin > window.off {
                 nativeLog("SCHED", "stale event ignored page=\(cfg.page)")
                 pushSyncIfActive()
                 return "started"
@@ -466,7 +466,7 @@ final class LocationTracker: NSObject {
     func handleScheduleTap(page: String) -> Bool {
         let window = ScheduleManager.shared.latestWindow(forPage: page)
         let nowMin = torontoMinutes(Date())
-        if nowMin < window.on - 15 || nowMin > window.off {
+        if nowMin < window.on - 5 || nowMin > window.off {
             nativeLog("SCHED", "stale event ignored page=\(page)")
             pushSyncIfActive()
             return true
@@ -518,7 +518,7 @@ final class LocationTracker: NSObject {
     /// Activation trigger: called on cold launch (after restore(), before
     /// the page loads) and on every foreground. Fires handleScheduleTap
     /// for a route only when ALL hold: schedule enabled, weekday rule
-    /// satisfied, now inside [on-15, off], occurrence not consumed, and
+    /// satisfied, now inside [on-5, off], occurrence not consumed, and
     /// no live ride on the OTHER route (skip - a mere open must not
     /// override a live ride; the banner tap keeps that power).
     func checkScheduleOnActivation(source: String) {
@@ -540,8 +540,8 @@ final class LocationTracker: NSObject {
         let nowMin = torontoMinutes(now)
         for page in ["am", "pm"] {
             let window = ScheduleManager.shared.latestWindow(forPage: page)
-            if nowMin < window.on - 15 || nowMin > window.off {
-                nativeLog("SCHED", "activation (\(source)): page=\(page) outside window [\(window.on - 15),\(window.off)] now=\(nowMin)")
+            if nowMin < window.on - 5 || nowMin > window.off {
+                nativeLog("SCHED", "activation (\(source)): page=\(page) outside window [\(window.on - 5),\(window.off)] now=\(nowMin)")
                 continue
             }
             if schedConsumed(page: page) {
