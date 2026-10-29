@@ -37,6 +37,9 @@ final class LocationTracker: NSObject {
                                   followingLabel: String, followingLat: Double, followingLng: Double)?
     private var nearCount = 0
     private var nearTargetIdx = -1
+    /// v46: stamp (Toronto day + minute) of the last off-stop tick
+    /// evaluation, so the location tick checks at most once a minute.
+    private var lastOffCheckStamp = ""
     private var pendingConfig: String?
     // On-bus detection (AM only)
     private var checkpointProgress: [Int: Int] = [:]
@@ -537,7 +540,45 @@ final class LocationTracker: NSObject {
     /// satisfied, now inside [on-5, off], occurrence not consumed, and
     /// no live ride on the OTHER route (skip - a mere open must not
     /// override a live ride; the banner tap keeps that power).
+    /// v46: end a live schedule-started ride whose window off-time has
+    /// passed. iOS schedules only start notifications, so without this
+    /// a schedule-started ride that never completes tracks past its off
+    /// until it finishes or is stopped by hand (found in v9.21
+    /// acceptance). Evaluated in the scheduler's own space — Toronto
+    /// day key + minutes — never as an absolute instant, so DST
+    /// transition days stay exact.
+    ///
+    /// Guards: a live ride only; scheduledRide only (set solely by the
+    /// schedule start paths, so manual rides are immune); not completed
+    /// or ended (finishRide keeps its record — a completed ride opened
+    /// later the same day must stay untouched); degenerate carried
+    /// windows (off <= on or unset) never fire. On firing: log, post
+    /// the end notification, then stopRide() itself (which writes the
+    /// consumption marker and ends the Live Activity immediately).
+    /// Returns true when it ended the ride.
+    @discardableResult
+    private func checkScheduleOff() -> Bool {
+        guard let r = ride, r.scheduledRide, !r.completed, !r.ended else { return false }
+        let on = r.page == "am" ? r.schedOn1 : r.schedOn2
+        let off = r.page == "am" ? r.schedOff1 : r.schedOff2
+        guard off > 0, off > on else { return false }
+        let now = Date()
+        let startDay = torontoDayKey(r.startedAt)
+        let today = torontoDayKey(now)
+        guard today >= startDay else { return false }
+        let nowMin = torontoMinutes(now)
+        guard today > startDay || nowMin > off else { return false }
+        nativeLog("SCHED", "off-stop ride=\(String(r.rideId.prefix(8))) page=\(r.page) off=\(off) now=\(nowMin)")
+        postOffStopNotification()
+        stopRide()
+        return true
+    }
+
     func checkScheduleOnActivation(source: String) {
+        // v46: an already-live schedule ride past its off ends here
+        // first — before the enabled/weekday gates, so the end depends
+        // only on the ride itself, never on today's toggles.
+        _ = checkScheduleOff()
         let d = UserDefaults.standard
         guard d.bool(forKey: "busalerts_sched_enabled") else {
             nativeLog("SCHED", "activation (\(source)): skip - schedule disabled")
@@ -1362,6 +1403,22 @@ final class LocationTracker: NSObject {
         center.add(req)
     }
 
+    /// v46: tell the user when the off-stop check ends a scheduled
+    /// ride (hard cutoff + notification). Mirrors
+    /// postArrivalNotification; own identifier prefix.
+    private func postOffStopNotification() {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        let content = UNMutableNotificationContent()
+        content.title = "Bus Stop Alerts"
+        content.body = "Scheduled ride ended — off time reached."
+        content.sound = .default
+        let req = UNNotificationRequest(
+            identifier: "bus.schedoff.\(Int(Date().timeIntervalSince1970))",
+            content: content, trigger: nil)
+        center.add(req)
+    }
+
     func pushSync(toast: String?) {
         guard let r = ride else { return }
         var payload: [String: Any] = [
@@ -1414,6 +1471,13 @@ extension LocationTracker: CLLocationManagerDelegate {
         guard let loc = locations.last, let r = ride else { return }
         // horizontalAccuracy < 0 means invalid on iOS.
         guard loc.horizontalAccuracy >= 0 else { return }
+        // v46: off-stop evaluation, throttled to once per Toronto
+        // minute; if it ended the ride, this fix has nothing to do.
+        let stamp = "\(torontoDayKey(Date()))-\(torontoMinutes(Date()))"
+        if stamp != lastOffCheckStamp {
+            lastOffCheckStamp = stamp
+            if checkScheduleOff() { return }
+        }
         handleLocation(loc, accuracy: loc.horizontalAccuracy, ride: r)
     }
 
