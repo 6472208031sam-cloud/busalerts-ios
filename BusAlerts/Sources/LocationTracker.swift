@@ -35,8 +35,11 @@ final class LocationTracker: NSObject {
     private var recoveryPending: (rideId: String, route: String, nextIndex: Int,
                                   nextLabel: String, nextLat: Double, nextLng: Double,
                                   followingLabel: String, followingLat: Double, followingLng: Double)?
-    private var nearCount = 0
-    private var nearTargetIdx = -1
+    // v48: Tier-2 confirmation counters are PER STOP (look-ahead R1/Q9):
+    // a stop keeps the count it earns while it is the following stop when
+    // it becomes current; a non-qualifying fix resets only that stop's
+    // count (R4). Sized to the ride's stops by ensureNearCounts(ride:).
+    private var nearCounts: [Int] = []
     /// v46: stamp (Toronto day + minute) of the last off-stop tick
     /// evaluation, so the location tick checks at most once a minute.
     private var lastOffCheckStamp = ""
@@ -100,7 +103,7 @@ final class LocationTracker: NSObject {
         restoreLogsIfNeeded()
         let ts = Self.logTimeFormatter.string(from: Date())
         nativeLogs.append("[\(ts)] [\(cat)] \(msg)")
-        if nativeLogs.count > 1000 { nativeLogs.removeFirst(nativeLogs.count - 1000) }
+        if nativeLogs.count > 5000 { nativeLogs.removeFirst(nativeLogs.count - 5000) }
         logLinesSinceFlush += 1
         flushLogsIfDue()
     }
@@ -109,6 +112,22 @@ final class LocationTracker: NSObject {
     func nativeLogsText() -> String {
         restoreLogsIfNeeded()
         return nativeLogs.joined(separator: "\n")
+    }
+
+    /// v48: line count of the (restored) buffer, for the chunked
+    /// bridge pull — the 5,000-line buffer is too large for one
+    /// prompt() return trip.
+    func nativeLogsCount() -> Int {
+        restoreLogsIfNeeded()
+        return nativeLogs.count
+    }
+
+    /// v48: one chunk of the buffer (oldest first) for the shim's
+    /// sliced getNativeLogs.
+    func nativeLogsChunk(from: Int, count: Int) -> [String] {
+        restoreLogsIfNeeded()
+        if from < 0 || from >= nativeLogs.count { return [] }
+        return Array(nativeLogs[from..<min(nativeLogs.count, from + count)])
     }
 
     func clearNativeLogs() {
@@ -136,8 +155,8 @@ final class LocationTracker: NSObject {
               let text = try? String(contentsOf: url, encoding: .utf8) else { return }
         let lines = text.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
         // File lines predate anything this process has logged.
-        nativeLogs = Array(lines.suffix(1000)) + nativeLogs
-        if nativeLogs.count > 1000 { nativeLogs.removeFirst(nativeLogs.count - 1000) }
+        nativeLogs = Array(lines.suffix(5000)) + nativeLogs
+        if nativeLogs.count > 5000 { nativeLogs.removeFirst(nativeLogs.count - 5000) }
     }
 
     private func flushLogsIfDue(force: Bool = false) {
@@ -199,8 +218,7 @@ final class LocationTracker: NSObject {
     /// the start note.
     private func teardownLiveRide() {
         ride = nil
-        nearCount = 0
-        nearTargetIdx = -1
+        nearCounts = []
         manager.stopUpdatingLocation()
         removeStartNote()
     }
@@ -676,8 +694,7 @@ final class LocationTracker: NSObject {
         if ending.scheduledRide { markSchedConsumed(page: ending.page) }
         LiveActivityManager.shared.end(rideId: ending.rideId)
         ride = nil
-        nearCount = 0
-        nearTargetIdx = -1
+        nearCounts = []
         manager.stopUpdatingLocation()
         RideStore.clear()
         // Stop clears lifecycle records too: no ended record survives it.
@@ -1091,8 +1108,7 @@ final class LocationTracker: NSObject {
 
     private func beginTracking() {
         guard ride != nil else { return }
-        nearCount = 0
-        nearTargetIdx = -1
+        nearCounts = []
         checkpointProgress.removeAll()
         lastCpLogAt = .distantPast
         onBusStop = nil
@@ -1135,8 +1151,7 @@ final class LocationTracker: NSObject {
             nativeLog("SNAP", snapLogLine(ride: r, state: "completed"))
         }
         ride = nil
-        nearCount = 0
-        nearTargetIdx = -1
+        nearCounts = []
         manager.stopUpdatingLocation()
         flushLogsIfDue(force: true)
         jsEval?("if (typeof nativeFinished === 'function') { try { nativeFinished(); } catch(e){} }")
@@ -1151,7 +1166,12 @@ final class LocationTracker: NSObject {
         // code below then processes this same fix against the NEW next
         // stop (idx is computed after this call) — a genuine arrival at
         // the following stop can still fire from this fix.
+        // v48 (R3): if recovery actually judged this fix (the pending
+        // one-shot was consumed), the look-ahead sits this fix out —
+        // recovery owns it entirely.
+        let recoveryWasPending = recoveryPending != nil
         evaluateRecoveryIfArmed(loc: loc, accuracy: accuracy, ride: r)
+        let recoveryJudgedThisFix = recoveryWasPending && recoveryPending == nil
         let lat = loc.coordinate.latitude
         let lng = loc.coordinate.longitude
         r.lastFixTime = Date()
@@ -1166,6 +1186,7 @@ final class LocationTracker: NSObject {
         }
 
         var idx = firstUnreached(r)
+        var snappedThisFix = false
         // Snap-forward ONLY at ride start (no stops reached yet).
         // Mid-ride stays strictly sequential — never reintroduce mid-ride snap
         // (it once caused a false B->L jump skipping C–K on the PM route).
@@ -1187,6 +1208,7 @@ final class LocationTracker: NSObject {
                 best = -1
             }
             if best > idx && bestDist <= r.snapDistance {
+                snappedThisFix = true
                 nativeLog("STOP", "Snap forward \(idx)->\(best) (\(r.stops[best].label)) dist=\(Int(bestDist))m")
                 for i in idx..<best {
                     r.stops[i].reached = true
@@ -1199,28 +1221,11 @@ final class LocationTracker: NSObject {
         }
         guard idx != -1 else { finishRide(); return }
 
-        let stop = r.stops[idx]
-        let distance = haversine(lat1: lat, lon1: lng, lat2: stop.lat, lon2: stop.lng)
-        let limit = stop.acc ?? 50
-        if distance <= stop.radius && accuracy <= limit {
-            // Tier 1: confident fix — arrive immediately.
+        if testArrivalTier(at: idx, lat: lat, lng: lng, accuracy: accuracy, ride: r) != nil {
             arrive(at: idx, genuineGPS: true)
-        } else if distance <= 15 && accuracy <= 150 {
-            // Very close to the pin — trust it even with moderate accuracy.
-            arrive(at: idx, genuineGPS: true)
-        } else if accuracy <= 200 && distance <= stop.radius + accuracy {
-            // Tier 2: poor accuracy (phone pocketed) — 3 consecutive fixes
-            // near the stop confirm the arrival. A GPS jump won't persist.
-            if nearTargetIdx != idx { nearTargetIdx = idx; nearCount = 0 }
-            nearCount += 1
-            if nearCount >= 3 {
-                nearCount = 0
-                nearTargetIdx = -1
-                arrive(at: idx, genuineGPS: true)
-            }
-        } else {
-            nearCount = 0
-            nearTargetIdx = -1
+        } else if !snappedThisFix && !recoveryJudgedThisFix {
+            // v48: live one-stop look-ahead (see maybeLookAhead).
+            maybeLookAhead(idx: idx, lat: lat, lng: lng, accuracy: accuracy, ride: r)
         }
 
         // Ride-start confirmation: once per ride, on the first fix, after
@@ -1238,6 +1243,89 @@ final class LocationTracker: NSObject {
 
         // On-bus detection (AM only)
         checkOnBusCheckpoints(lat: lat, lng: lng, accuracy: accuracy, ride: r)
+    }
+
+    private func ensureNearCounts(ride r: RideState) {
+        if nearCounts.count != r.stops.count { nearCounts = [Int](repeating: 0, count: r.stops.count) }
+    }
+
+    /// Runs one stop's arrival tiers against a fix, using that stop's
+    /// own radius/accuracy limit and its own Tier-2 counter (updated
+    /// independently of any other stop tested on the same fix — R4).
+    /// Returns (tier, distanceMetres) when the stop fires, else nil.
+    private func testArrivalTier(at sIdx: Int, lat: Double, lng: Double, accuracy: Double, ride r: RideState) -> (tier: String, dist: Double)? {
+        let s = r.stops[sIdx]
+        let distance = haversine(lat1: lat, lon1: lng, lat2: s.lat, lon2: s.lng)
+        let limit = s.acc ?? 50
+        if distance <= s.radius && accuracy <= limit {
+            // Tier 1: confident fix — arrive immediately.
+            return ("tier1", distance)
+        }
+        if distance <= 15 && accuracy <= 150 {
+            // Very close to the pin — trust it even with moderate accuracy.
+            return ("very-close", distance)
+        }
+        ensureNearCounts(ride: r)
+        if accuracy <= 200 && distance <= s.radius + accuracy {
+            // Tier 2: poor accuracy (phone pocketed) — 3 consecutive
+            // fixes near the stop confirm the arrival.
+            nearCounts[sIdx] += 1
+            if nearCounts[sIdx] >= 3 {
+                nearCounts[sIdx] = 0
+                return ("tier2", distance)
+            }
+        } else {
+            nearCounts[sIdx] = 0
+        }
+        return nil
+    }
+
+    /// "Stop A (9): ..." -> "Stop A"; "Stop 5: ..." -> "Stop 5".
+    private func shortStopName(_ label: String) -> String {
+        var h = label
+        if let c = h.firstIndex(of: ":") { h = String(h[..<c]).trimmingCharacters(in: .whitespaces) }
+        if let p = h.firstIndex(of: "(") { h = String(h[..<p]).trimmingCharacters(in: .whitespaces) }
+        return h
+    }
+
+    /// v48 live one-stop look-ahead: the current stop did not fire on
+    /// this fix, so test ONLY the following stop with its own normal
+    /// tiers. If it fires, the current stop is marked reached+skipped
+    /// with the D7 mechanics (no arrival side effects for it —
+    /// Decision 3: even if it is My Stop), the frozen [SKIP] line is
+    /// logged, the ⏭ notice is sent BEFORE the arrival send, and the
+    /// arrival processes normally. Armed only once position is
+    /// established (Decision 6); the final stop can never be skipped;
+    /// at most one advance per fix (Q8).
+    private func maybeLookAhead(idx: Int, lat: Double, lng: Double, accuracy: Double, ride r: RideState) {
+        if idx < 1 { return }
+        let nIdx = idx + 1
+        if nIdx >= r.stops.count { return }
+        guard let res = testArrivalTier(at: nIdx, lat: lat, lng: lng, accuracy: accuracy, ride: r) else { return }
+        let cur = r.stops[idx]
+        let nxt = r.stops[nIdx]
+        cur.reached = true
+        cur.skipped = true
+        ensureNearCounts(ride: r)
+        nearCounts[nIdx] = 0
+        nativeLog("SKIP", "look-ahead: \(shortStopName(cur.label)) skipped (\(shortStopName(nxt.label)) arrival, \(res.tier), \(Int(res.dist.rounded()))m) ride=\(String(r.rideId.prefix(8)))")
+        sendSkippedNotice(cur: cur, ride: r)
+        arrive(at: nIdx, genuineGPS: true)
+    }
+
+    /// The ⏭ skipped notice, mirroring the arrival send's gating and
+    /// [NTFY] verdict logging. Issued before the arrival's own send.
+    private func sendSkippedNotice(cur: RideStop, ride r: RideState) {
+        let devTag = r.deviceId.isEmpty ? "" : " [" + r.deviceId + "]" + (r.deviceLabel.isEmpty ? "" : " (" + r.deviceLabel + ")")
+        let msg = "⏭\(devTag) skipped \(cur.label)."
+        if r.followerOn && !r.topic.isEmpty {
+            nativeLog("NTFY", "Sending skipped: \(msg)")
+            NtfyClient.post(topic: r.topic, message: msg) { [weak self] in
+                DispatchQueue.main.async { self?.nativeLog("NTFY", "Sent: \(msg)") }
+            }
+        } else {
+            nativeLog("NTFY", "Suppressed skipped (follower alerts off): \(msg)")
+        }
     }
 
     private func checkOnBusCheckpoints(lat: Double, lng: Double, accuracy: Double, ride r: RideState) {
@@ -1287,8 +1375,8 @@ final class LocationTracker: NSObject {
     /// Phase 4 recovery credit; a genuine GPS arrival does.
     private func arrive(at idx: Int, genuineGPS: Bool = false) {
         guard let r = ride, idx < r.stops.count else { return }
-        nearCount = 0
-        nearTargetIdx = -1
+        ensureNearCounts(ride: r)
+        if idx >= 0 && idx < nearCounts.count { nearCounts[idx] = 0 }
         onBusStop = nil
         // Phase 4: a genuine GPS arrival REGAINS the recovery credit.
         // Set before this function's persist() below so it is saved
