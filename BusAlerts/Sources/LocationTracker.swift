@@ -217,6 +217,13 @@ final class LocationTracker: NSObject {
     /// business): drops the reference, stops location updates and removes
     /// the start note.
     private func teardownLiveRide() {
+        // End the Live Activity with the ride — except a completed ride,
+        // whose card a caller may already have ended with its +5 min
+        // linger (endCompleted). Paths that finalize a ride as ENDED
+        // (got-off, skip-final) rely on this: nothing else ends their card.
+        if let r = ride, !r.completed {
+            LiveActivityManager.shared.end(rideId: r.rideId)
+        }
         ride = nil
         nearCounts = []
         manager.stopUpdatingLocation()
