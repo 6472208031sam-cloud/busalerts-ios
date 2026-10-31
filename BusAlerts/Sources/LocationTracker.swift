@@ -40,6 +40,13 @@ final class LocationTracker: NSObject {
     // it becomes current; a non-qualifying fix resets only that stop's
     // count (R4). Sized to the ride's stops by ensureNearCounts(ride:).
     private var nearCounts: [Int] = []
+    // Live Tracker (v50): position-writer cadence state, keyed to the
+    // ride so any start path (manual, scheduled, restored) re-arms it.
+    private var posRideId = ""
+    private var posLastLat = 0.0
+    private var posLastLng = 0.0
+    private var posLastSend = Date.distantPast
+    private var posSentThisRide = false
     /// v46: stamp (Toronto day + minute) of the last off-stop tick
     /// evaluation, so the location tick checks at most once a minute.
     private var lastOffCheckStamp = ""
@@ -224,10 +231,79 @@ final class LocationTracker: NSObject {
         if let r = ride, !r.completed {
             LiveActivityManager.shared.end(rideId: r.rideId)
         }
+        // Live Tracker (v50): every teardown ends a ride — retire its
+        // position record too (completed rides included; their card
+        // linger above is a display matter, the dot retires at once).
+        if let r = ride {
+            markPositionInactive(ride: r)
+        }
         ride = nil
         nearCounts = []
         manager.stopUpdatingLocation()
         removeStartNote()
+    }
+
+    // ---- Live Tracker (v50): position writer ----
+    // Streams this phone's live position to the Firebase Realtime
+    // Database during a ride so the follower pages can glide their bus
+    // dot. Fire-and-forget, called AFTER arrival and on-bus processing
+    // — the event pipeline never reads or waits on it. Gated on
+    // followerOn, like every ntfy send. Cadence (decided 2026-10-26):
+    // send when moved >=25m AND >=5s since the last send, or >=100m
+    // moved (immediate), or 30s heartbeat. Fixes with accuracy worse
+    // than 100m are skipped entirely (the followers ignore them
+    // anyway; this keeps the cadence anchor honest). fbBase/fbPath
+    // arrive with the page config; the path is a secret — the URL is
+    // never logged.
+    private func maybeSendPosition(lat: Double, lng: Double, accuracy: Double, ride r: RideState) {
+        if r.rideId != posRideId {
+            posRideId = r.rideId
+            posSentThisRide = false
+            posLastSend = Date.distantPast
+        }
+        guard r.followerOn, !r.fbBase.isEmpty, !r.fbPath.isEmpty, !r.deviceId.isEmpty else { return }
+        guard accuracy <= 100 else { return }
+        let now = Date()
+        let dist = posSentThisRide ? haversine(lat1: posLastLat, lon1: posLastLng, lat2: lat, lon2: lng) : 0
+        let dt = posSentThisRide ? now.timeIntervalSince(posLastSend) : Double.infinity
+        let due = !posSentThisRide || dist >= 100 || (dist >= 25 && dt >= 5) || dt >= 30
+        guard due else { return }
+        posLastLat = lat
+        posLastLng = lng
+        posLastSend = now
+        posSentThisRide = true
+        let body: [String: Any] = [
+            "tag": r.deviceId,
+            "label": r.deviceLabel,
+            "route": r.page,
+            "lat": lat,
+            "lng": lng,
+            "acc": Int(accuracy.rounded()),
+            "ts": Int(now.timeIntervalSince1970 * 1000),
+            "active": true,
+        ]
+        FirebaseClient.put(base: r.fbBase, path: r.fbPath, tag: r.deviceId, body: body) { [weak self] code in
+            DispatchQueue.main.async {
+                self?.nativeLog("POS", "put (\(code ?? -1)) dist=\(Int(dist.rounded()))m dt=\(dt == .infinity ? -1 : Int(dt))s")
+            }
+        }
+    }
+
+    /// Ride end: mark this device's record inactive so the followers
+    /// retire the dot. Idempotent; gated on config presence only.
+    private func markPositionInactive(ride r: RideState) {
+        guard !r.fbBase.isEmpty, !r.fbPath.isEmpty, !r.deviceId.isEmpty else { return }
+        posSentThisRide = false
+        let body: [String: Any] = [
+            "tag": r.deviceId,
+            "active": false,
+            "ts": Int(Date().timeIntervalSince1970 * 1000),
+        ]
+        FirebaseClient.put(base: r.fbBase, path: r.fbPath, tag: r.deviceId, body: body) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.nativeLog("POS", "marked inactive (ride end)")
+            }
+        }
     }
 
     // Settings acknowledgment (Phase 2): persisted in UserDefaults so the
@@ -700,6 +776,7 @@ final class LocationTracker: NSObject {
         removeStartNote()
         if ending.scheduledRide { markSchedConsumed(page: ending.page) }
         LiveActivityManager.shared.end(rideId: ending.rideId)
+        markPositionInactive(ride: ending)
         ride = nil
         nearCounts = []
         manager.stopUpdatingLocation()
@@ -779,6 +856,8 @@ final class LocationTracker: NSObject {
             r.deviceId = cfg.deviceId
             r.deviceLabel = cfg.deviceLabel
             r.topic = cfg.topic
+            r.fbBase = cfg.fbBase
+            r.fbPath = cfg.fbPath
             r.snapDistance = cfg.snapDistance
             r.schedEnabled = cfg.schedEnabled
             r.schedOn1 = cfg.schedOn1
@@ -1155,6 +1234,7 @@ final class LocationTracker: NSObject {
             RideStore.save(r)
             if r.scheduledRide { markSchedConsumed(page: r.page) }
             LiveActivityManager.shared.endCompleted(ride: r)
+            markPositionInactive(ride: r)
             nativeLog("SNAP", snapLogLine(ride: r, state: "completed"))
         }
         ride = nil
@@ -1250,6 +1330,10 @@ final class LocationTracker: NSObject {
 
         // On-bus detection (AM only)
         checkOnBusCheckpoints(lat: lat, lng: lng, accuracy: accuracy, ride: r)
+
+        // Live Tracker (v50): the position write goes last — after all
+        // arrival processing — and never blocks it.
+        maybeSendPosition(lat: lat, lng: lng, accuracy: accuracy, ride: r)
     }
 
     private func ensureNearCounts(ride r: RideState) {
