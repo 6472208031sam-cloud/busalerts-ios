@@ -2036,7 +2036,7 @@ final class LocationTracker: NSObject {
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
         let content = UNMutableNotificationContent()
         content.title = "Bus Stop Alerts"
-        content.body = "Ride ended \u2014 no stops reached."
+        content.body = "Ride ended — no stops reached."
         content.sound = .default
         let req = UNNotificationRequest(
             identifier: "slcabandon.\(Int(Date().timeIntervalSince1970))",
