@@ -41,6 +41,8 @@ final class ScheduleManager {
         d.set(config.schedOff2, forKey: "busalerts_sched_off2")
         d.set(config.schedWeekdaysOnly, forKey: "busalerts_sched_weekdays")
         schedule()
+        // v55: the schedule toggle also arms/disarms SLC auto-start.
+        LocationTracker.shared.updateSlcArming(enabled: config.schedEnabled)
     }
 
     /// The most recent schedule window for a page (Phase 2): stored
