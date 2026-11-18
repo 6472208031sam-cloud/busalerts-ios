@@ -40,6 +40,9 @@ final class LocationTracker: NSObject {
     // it becomes current; a non-qualifying fix resets only that stop's
     // count (R4). Sized to the ride's stops by ensureNearCounts(ride:).
     private var nearCounts: [Int] = []
+    // v61: My Home Stop — the home point's own Tier-2 counter + latch.
+    private var homeNearCount = 0
+    private var homeArrived = false
     // Live Tracker (v50): position-writer cadence state, keyed to the
     // ride so any start path (manual, scheduled, restored) re-arms it.
     private var posRideId = ""
@@ -321,6 +324,8 @@ final class LocationTracker: NSObject {
             posGoodSpeedMs = -1
             armPosTimer(rideId: r.rideId)
         }
+        // v61: the walk-home phase publishes nothing (H4).
+        if r.walkPhase { return }
         // v53: a marked ride sends nothing more — not even this fix.
         if posRideEnded { return }
         guard r.followerOn, !r.fbBase.isEmpty, !r.fbPath.isEmpty, !r.deviceId.isEmpty else { return }
@@ -391,6 +396,10 @@ final class LocationTracker: NSObject {
 
     private func maybeTimerSend() {
         guard let r = ride, !r.completed, !r.ended, r.rideId == posTimerRideId else { stopPosTimer(); return }
+        // v61: the walk-home phase publishes nothing (H4). (The SLC
+        // abandon check below cannot fire in the phase — it requires
+        // zero reached stops, and got-off already reached one.)
+        if r.walkPhase { return }
         // v55: SLC abandon — evaluated ABOVE the follower/config
         // guard, so a follower-off phone still abandons its ride.
         if checkSlcAbandon() { return }
@@ -458,6 +467,7 @@ final class LocationTracker: NSObject {
     private func settingsSignature(for cfg: RideState) -> String {
         return [cfg.followerOn, cfg.sound].map { $0 ? "1" : "0" }.joined(separator: "|")
             + "|" + cfg.myStopAm + "|" + cfg.myStopPm
+            + "|" + "\(cfg.homeLat)|\(cfg.homeLng)"
             + "|" + cfg.deviceId + "|" + cfg.deviceLabel
             + "|" + (cfg.schedEnabled ? "1" : "0")
             + "|" + "\(cfg.schedOn1)|\(cfg.schedOff1)|\(cfg.schedOn2)|\(cfg.schedOff2)"
@@ -564,7 +574,7 @@ final class LocationTracker: NSObject {
         }
 
         // (d) Active ride with nothing left to reach → it completed.
-        if !liveProgressing, !subject.completed, !subject.ended,
+        if !liveProgressing, !subject.completed, !subject.ended, !subject.walkPhase,
            firstUnreached(subject) == -1 {
             subject.completed = true
             subject.completedAt = now
@@ -579,7 +589,7 @@ final class LocationTracker: NSObject {
         }
 
         // (e) Stale active ride → discard it (no ended record, no ntfy).
-        if !liveProgressing, !subject.completed, !subject.ended, subject.startedAt != 0 {
+        if !liveProgressing, !subject.completed, !subject.ended, !subject.walkPhase, subject.startedAt != 0 {
             let startDay = torontoDayKey(subject.startedAt)
             let today = torontoDayKey(now)
             var reason: String? = nil
@@ -944,6 +954,15 @@ final class LocationTracker: NSObject {
     func stopRide() {
         nativeLog("SYS", "stopRide")
         guard let ending = ride else { return }
+        // v61 (SIMP-1b): a stop during the walk phase runs the deferred
+        // got-off ending instead of the plain teardown. (The schedule
+        // off-stop funnels through here too.)
+        if ending.walkPhase {
+            nativeLog("SYS", "stop during walk-home phase - running got-off ending")
+            let devTag = ending.deviceId.isEmpty ? "" : " [" + ending.deviceId + "]" + (ending.deviceLabel.isEmpty ? "" : " (" + ending.deviceLabel + ")")
+            runGotOffEnding(ride: ending, devTag: devTag)
+            return
+        }
         removeStartNote()
         if ending.scheduledRide { markSchedConsumed(page: ending.page) }
         LiveActivityManager.shared.end(rideId: ending.rideId)
@@ -966,6 +985,11 @@ final class LocationTracker: NSObject {
     func skipNext() {
         guard let r = ride else {
             nativeLog("SKIP", "no-op (no active ride)")
+            return
+        }
+        // v61: there is no next stop in the walk-home phase.
+        if r.walkPhase {
+            nativeLog("SKIP", "no-op (walk-home phase)")
             return
         }
         guard let idx = r.stops.firstIndex(where: { !$0.reached && !$0.skipped }) else {
@@ -1024,6 +1048,8 @@ final class LocationTracker: NSObject {
             r.sound = cfg.sound
             r.myStopAm = cfg.myStopAm
             r.myStopPm = cfg.myStopPm
+            r.homeLat = cfg.homeLat
+            r.homeLng = cfg.homeLng
             r.deviceId = cfg.deviceId
             r.deviceLabel = cfg.deviceLabel
             r.topic = cfg.topic
@@ -1229,6 +1255,8 @@ final class LocationTracker: NSObject {
     ///     verdict here and arm nothing.
     /// Otherwise arm the one-shot evaluation for the first fresh fix.
     private func armRecoveryEvaluation(for r: RideState) {
+        // v61: a walk-phase ride never arms stop recovery (SIMP-7).
+        guard !r.walkPhase else { return }
         recoveryPending = nil
         guard let nextIdx = r.stops.firstIndex(where: { !$0.reached && !$0.skipped }) else { return }
         let next = r.stops[nextIdx]
@@ -1394,6 +1422,14 @@ final class LocationTracker: NSObject {
     }
 
     private func finishRide() {
+        // v61 (SIMP-1b): an ending during the walk phase runs the
+        // deferred got-off ending instead of completing the route.
+        if let r = ride, r.walkPhase {
+            nativeLog("SYS", "finishRide during walk-home phase - running got-off ending")
+            let devTag = r.deviceId.isEmpty ? "" : " [" + r.deviceId + "]" + (r.deviceLabel.isEmpty ? "" : " (" + r.deviceLabel + ")")
+            runGotOffEnding(ride: r, devTag: devTag)
+            return
+        }
         nativeLog("SYS", "finishRide")
         startNotificationPending = false
         startNotificationShownAccuracy = nil
@@ -1443,6 +1479,13 @@ final class LocationTracker: NSObject {
         if now.timeIntervalSince(lastGpsLogAt) >= 1.0 {
             lastGpsLogAt = now
             nativeLog("GPS", String(format: "fix lat=%.6f lng=%.6f acc=%dm", lat, lng, Int(accuracy)))
+        }
+
+        // v61: in the walk-home phase, fixes test ONLY the home point —
+        // no snap, no stop arrivals, no look-ahead, no position writes.
+        if r.walkPhase {
+            evaluateHomeArrival(loc: loc, accuracy: accuracy, ride: r)
+            return
         }
 
         var idx = firstUnreached(r)
@@ -1521,9 +1564,23 @@ final class LocationTracker: NSObject {
     /// Returns (tier, distanceMetres) when the stop fires, else nil.
     private func testArrivalTier(at sIdx: Int, lat: Double, lng: Double, accuracy: Double, ride r: RideState) -> (tier: String, dist: Double)? {
         let s = r.stops[sIdx]
-        let distance = haversine(lat1: lat, lon1: lng, lat2: s.lat, lon2: s.lng)
-        let limit = s.acc ?? 50
-        if distance <= s.radius && accuracy <= limit {
+        ensureNearCounts(ride: r)
+        var counter = nearCounts[sIdx]
+        let res = testArrivalTierCore(tLat: s.lat, tLng: s.lng, radius: s.radius, limit: s.acc ?? 50,
+                                      counter: &counter, lat: lat, lng: lng, accuracy: accuracy)
+        nearCounts[sIdx] = counter
+        return res
+    }
+
+    /// v61 (SIMP-3): the tier core, parameterized so the My Home Stop
+    /// point is judged by exactly the same code as the stops. The
+    /// Tier-2 counter arrives by reference (a stop's nearCounts slot,
+    /// or the tracker's home counter).
+    private func testArrivalTierCore(tLat: Double, tLng: Double, radius: Double, limit: Double,
+                                     counter: inout Int, lat: Double, lng: Double,
+                                     accuracy: Double) -> (tier: String, dist: Double)? {
+        let distance = haversine(lat1: lat, lon1: lng, lat2: tLat, lon2: tLng)
+        if distance <= radius && accuracy <= limit {
             // Tier 1: confident fix — arrive immediately.
             return ("tier1", distance)
         }
@@ -1531,17 +1588,16 @@ final class LocationTracker: NSObject {
             // Very close to the pin — trust it even with moderate accuracy.
             return ("very-close", distance)
         }
-        ensureNearCounts(ride: r)
-        if accuracy <= 200 && distance <= s.radius + accuracy {
+        if accuracy <= 200 && distance <= radius + accuracy {
             // Tier 2: poor accuracy (phone pocketed) — 3 consecutive
             // fixes near the stop confirm the arrival.
-            nearCounts[sIdx] += 1
-            if nearCounts[sIdx] >= 3 {
-                nearCounts[sIdx] = 0
+            counter += 1
+            if counter >= 3 {
+                counter = 0
                 return ("tier2", distance)
             }
         } else {
-            nearCounts[sIdx] = 0
+            counter = 0
         }
         return nil
     }
@@ -1650,6 +1706,99 @@ final class LocationTracker: NSObject {
         if shouldLog { lastCpLogAt = now }
     }
 
+    /// v61: true when this ride carries a My Home Stop point.
+    private func hasHomePoint(ride r: RideState) -> Bool {
+        return r.homeLat != 0 && r.homeLng != 0
+    }
+
+    /// v61: the got-off ending sequence, factored out of arrive() so the
+    /// walk-home phase can run it at the true end: mark ending, post the
+    /// off-bus line, finalize on completion if the ride is unchanged.
+    /// Repeat calls on an ending/ended ride are ignored.
+    private func runGotOffEnding(ride r: RideState, devTag: String) {
+        guard !r.ending, !r.ended else { return }
+        let offMsg = "📱\(devTag) off bus. Tracking stopped."
+        var offTaskID: UIBackgroundTaskIdentifier = .invalid
+        offTaskID = UIApplication.shared.beginBackgroundTask(withName: "ntfy-offbus") {
+            UIApplication.shared.endBackgroundTask(offTaskID)
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.ride === r else {
+                UIApplication.shared.endBackgroundTask(offTaskID)
+                return
+            }
+            r.ending = true
+            self.persist()
+            let endingRideId = r.rideId
+            let endingRevision = r.revision
+            NtfyClient.post(topic: r.topic, message: offMsg) { [weak self] in
+                DispatchQueue.main.async { self?.nativeLog("NTFY", "Sent: \(offMsg)") }
+                UIApplication.shared.endBackgroundTask(offTaskID)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    if self.ride === r, r.rideId == endingRideId,
+                       r.revision == endingRevision {
+                        r.ending = false
+                        r.ended = true
+                        r.endedAt = Int(Date().timeIntervalSince1970 * 1000)
+                        r.endReason = "got-off"
+                        r.revision += 1
+                        EndedStore.save(r)
+                        RideStore.clear()
+                        self.teardownLiveRide()
+                        self.nativeLog("SNAP", self.snapLogLine(ride: r, state: "ended"))
+                        self.jsEval?("if (typeof nativeNoRide === 'function') { try { nativeNoRide(); } catch(e){} }")
+                    } else {
+                        self.nativeLog("SYS", "got-off finalize skipped (state changed)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// v61: got-off with a home point set — the ride stays live but
+    /// private until the phone reaches the home point (My Home Stop,
+    /// H1/H4).
+    private func enterWalkPhase(ride r: RideState) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.ride === r else { return }
+            r.walkPhase = true
+            self.homeNearCount = 0
+            self.homeArrived = false
+            self.persist()
+            // H4: the public side ends at got-off exactly as today.
+            self.markPositionInactive(ride: r)
+            LiveActivityManager.shared.start(ride: r)
+            self.nativeLog("WALK", "walk-home phase started - tracking privately to the home point")
+        }
+    }
+
+    /// v61: in the walk phase, fixes test ONLY the home point (the
+    /// stops' own tier evaluator via SIMP-3: radius 75 m, default
+    /// accuracy limit, its own Tier-2 counter). On arrival: the
+    /// "home." message, then the deferred got-off ending.
+    private func evaluateHomeArrival(loc: CLLocation, accuracy: Double, ride r: RideState) {
+        if homeArrived { return }
+        var counter = homeNearCount
+        let res = testArrivalTierCore(tLat: r.homeLat, tLng: r.homeLng, radius: 75, limit: 50,
+                                      counter: &counter, lat: loc.coordinate.latitude,
+                                      lng: loc.coordinate.longitude, accuracy: accuracy)
+        homeNearCount = counter
+        guard let res = res else { return }
+        homeArrived = true
+        nativeLog("WALK", "home arrival tier=\(res.tier) dist=\(Int(res.dist.rounded()))m - running the got-off ending")
+        let devTag = r.deviceId.isEmpty ? "" : " [" + r.deviceId + "]" + (r.deviceLabel.isEmpty ? "" : " (" + r.deviceLabel + ")")
+        let msg = "📱\(devTag) home."
+        if r.followerOn && !r.topic.isEmpty {
+            NtfyClient.post(topic: r.topic, message: msg) { [weak self] in
+                DispatchQueue.main.async { self?.nativeLog("NTFY", "Sent: \(msg)") }
+                self?.runGotOffEnding(ride: r, devTag: devTag)
+            }
+        } else {
+            runGotOffEnding(ride: r, devTag: devTag)
+        }
+    }
+
     /// Arrival at a stop. `genuineGPS` is true ONLY for the calls from
     /// handleLocation's sequential GPS tiers — the one genuine-arrival
     /// code path. Manual markReached() calls with the default false, so
@@ -1713,42 +1862,14 @@ final class LocationTracker: NSObject {
                 // interrupted or superseded teardown never clobbers a
                 // newer state (reconcile rule (c) is the backstop).
                 if gotOff {
-                    let offMsg = "📱\(devTag) off bus. Tracking stopped."
-                    var offTaskID: UIBackgroundTaskIdentifier = .invalid
-                    offTaskID = UIApplication.shared.beginBackgroundTask(withName: "ntfy-offbus") {
-                        UIApplication.shared.endBackgroundTask(offTaskID)
-                    }
-                    DispatchQueue.main.async {
-                        guard let self = self, self.ride === r else {
-                            UIApplication.shared.endBackgroundTask(offTaskID)
-                            return
-                        }
-                        r.ending = true
-                        self.persist()
-                        let endingRideId = r.rideId
-                        let endingRevision = r.revision
-                        NtfyClient.post(topic: r.topic, message: offMsg) { [weak self] in
-                            DispatchQueue.main.async { self?.nativeLog("NTFY", "Sent: \(offMsg)") }
-                            UIApplication.shared.endBackgroundTask(offTaskID)
-                            DispatchQueue.main.async {
-                                guard let self = self else { return }
-                                if self.ride === r, r.rideId == endingRideId,
-                                   r.revision == endingRevision {
-                                    r.ending = false
-                                    r.ended = true
-                                    r.endedAt = Int(Date().timeIntervalSince1970 * 1000)
-                                    r.endReason = "got-off"
-                                    r.revision += 1
-                                    EndedStore.save(r)
-                                    RideStore.clear()
-                                    self.teardownLiveRide()
-                                    self.nativeLog("SNAP", self.snapLogLine(ride: r, state: "ended"))
-                                    self.jsEval?("if (typeof nativeNoRide === 'function') { try { nativeNoRide(); } catch(e){} }")
-                                } else {
-                                    self.nativeLog("SYS", "got-off finalize skipped (state changed)")
-                                }
-                            }
-                        }
+                    // v61: with a My Home Stop point set, got-off opens
+                    // the walk-home phase instead of ending the ride;
+                    // the ending runs at the true end (runGotOffEnding).
+                    guard let self = self else { return }
+                    if self.hasHomePoint(ride: r) {
+                        self.enterWalkPhase(ride: r)
+                    } else {
+                        self.runGotOffEnding(ride: r, devTag: devTag)
                     }
                 }
             }
@@ -1757,7 +1878,7 @@ final class LocationTracker: NSObject {
         }
         persist()
         pushSync(toast: "\(stop.label) reached")
-        if firstUnreached(r) == -1 { finishRide() }
+        if !r.walkPhase && firstUnreached(r) == -1 { finishRide() }
     }
 
     private func vibrate() {
