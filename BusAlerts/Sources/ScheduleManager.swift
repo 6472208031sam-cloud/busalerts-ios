@@ -29,12 +29,13 @@ final class ScheduleManager {
     /// applyScheduleSettings() — safe to call with no active ride.
     func apply(config: RideState) {
         let pageKey = config.page == "pm" ? "pm" : "am"
-        LocationTracker.shared.schedLog("apply page=\(pageKey) enabled=\(config.schedEnabled) on1=\(config.schedOn1) off1=\(config.schedOff1) on2=\(config.schedOn2) off2=\(config.schedOff2) weekdaysOnly=\(config.schedWeekdaysOnly)")
+        LocationTracker.shared.schedLog("apply page=\(pageKey) enabled=\(config.schedEnabled) on1=\(config.schedOn1) off1=\(config.schedOff1) on2=\(config.schedOn2) off2=\(config.schedOff2) weekdaysOnly=\(config.schedWeekdaysOnly) slc=\(config.slcEnabled)")
         if let data = try? JSONSerialization.data(withJSONObject: config.toJSON()) {
             UserDefaults.standard.set(data, forKey: "busalerts_sched_config_" + pageKey)
         }
         let d = UserDefaults.standard
         d.set(config.schedEnabled, forKey: "busalerts_sched_enabled")
+        d.set(config.slcEnabled, forKey: "busalerts_slc_enabled")
         d.set(config.schedOn1, forKey: "busalerts_sched_on1")
         d.set(config.schedOff1, forKey: "busalerts_sched_off1")
         d.set(config.schedOn2, forKey: "busalerts_sched_on2")
@@ -42,7 +43,8 @@ final class ScheduleManager {
         d.set(config.schedWeekdaysOnly, forKey: "busalerts_sched_weekdays")
         schedule()
         // v55: the schedule toggle also arms/disarms SLC auto-start.
-        LocationTracker.shared.updateSlcArming(enabled: config.schedEnabled)
+        // v64: the page's SLC switch ANDs in — either switch off disarms.
+        LocationTracker.shared.updateSlcArming(enabled: config.schedEnabled && config.slcEnabled)
     }
 
     /// The most recent schedule window for a page (Phase 2): stored

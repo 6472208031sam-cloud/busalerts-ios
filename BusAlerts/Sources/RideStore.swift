@@ -70,6 +70,9 @@ final class RideState {
     var sound = false
     var snapDistance = 100.0
     var schedEnabled = false
+    // v64: the page's SLC switch. Default ON — a config without
+    // the key (older page, a persisted ride) keeps SLC available.
+    var slcEnabled = true
     var schedOn1 = 480
     var schedOff1 = 600
     var schedOn2 = 930
@@ -142,6 +145,7 @@ final class RideState {
             snapDistance = Double(i)
         }
         schedEnabled = json["schedEnabled"] as? Bool ?? false
+        slcEnabled = json["slcEnabled"] as? Bool ?? true
         schedOn1 = json["schedOn1"] as? Int ?? 480
         schedOff1 = json["schedOff1"] as? Int ?? 600
         schedOn2 = json["schedOn2"] as? Int ?? 930
@@ -198,6 +202,7 @@ final class RideState {
             "sound": sound,
             "snapDistance": snapDistance,
             "schedEnabled": schedEnabled,
+            "slcEnabled": slcEnabled,
             "schedOn1": schedOn1,
             "schedOff1": schedOff1,
             "schedOn2": schedOn2,
